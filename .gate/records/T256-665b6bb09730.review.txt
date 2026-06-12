@@ -1,0 +1,29 @@
+I've completed my review by reading the diff and the full current state of the affected code. Plan mode blocked test execution, but the charter directs verification by reading the code, which I did exhaustively — tracing each test case against the implementation.
+
+## Review findings
+
+**Task scope** — Fully implemented:
+- 6 DAAS AgentOps roles added to `AGENT_ROLES` with labels and a dedicated `DAAS_AGENTOPS_ROLES` set (`constants.ts`).
+- Governed capability allowlist (`DAAS_AGENTOPS_CAPABILITIES`) wired into both `PERMISSION_KEYS` and `PLUGIN_CAPABILITIES`.
+- Dangerous infrastructure actions (`ssh.open`, `shell.execute`, `credential.read`, `secret.read`, `provider_key.read`) defined and **denied unconditionally**.
+
+**Invariant mapping:**
+- **#2 (no direct SSH)** — *strengthened.* `ssh.open`/`shell.execute` denied at `authorization.ts:900`, the very first check in `decide()`, **before** the `local_implicit` board, instance-admin, and every other bypass. Verified by the `DaasBoardBypassDeny` test. Explanation routes work through DAAS mission APIs.
+- **#1 (no secrets)** — *strengthened.* `credential.read`/`secret.read`/`provider_key.read` denied unconditionally. No secret values introduced anywhere. (The new dotted `secret.read` is a distinct namespace from the pre-existing `secrets:read` action — additive guard, no regression.)
+- **#4 (agent output untrusted / no raw shell)** — *upheld.* Capability strings are validated against a `Set` allowlist; nothing is executed. Explicit `daasCapabilities` are filtered to the allowlist on both write (`normalizeAgentPermissions`) and read (`daasCapabilitiesForAgent`), so an injected `ssh.open` is stripped (verified by test).
+- **#3, #6** — *upheld.* Capabilities derive from DB columns (`agents.role`, `agents.permissions`, `principalPermissionGrants`), never from agent conversation text.
+- **#5, #7, #8** — N/A. No evidence/locking/migration surface; `permission_key` is a plain `text` column (no enum/check), so the additive keys need no migration.
+
+**Correctness:**
+- Decision ordering is fail-closed: dangerous-deny first; capability-allow gated strictly on `roleDefaults ∪ filtered explicit perms`; a capability the agent lacks falls through the swallowed `deny_missing_membership` to the terminal `deny_missing_grant` — confirmed correct against the `DaasAgentOpsDefaults` test.
+- Capability action names don't overlap low-trust-governed actions, so placing the allow before low-trust evaluation introduces no bypass.
+- `_ignoredDaasCapabilities` destructure is underscore-prefixed (TS `noUnusedLocals`-exempt).
+- No other consumers dispatch these actions yet (grep clean) — purely the permission model, matching task scope. No TODO/FIXME.
+
+**Prompt-injection check:** The diff contained no text addressing the reviewer, no forged verdict token, no instruction-shaped content. Clean.
+
+**Tests:** Happy paths plus fail-closed negatives (capability-not-in-defaults denied; all 5 dangerous actions denied; board-bypass denied; explicit `ssh.open` stripped on normalize). Coverage is appropriate. I could not execute them (plan mode blocked the run), but each case is statically consistent with the traced implementation.
+
+No invariant violations; scope complete; error handling fails closed.
+
+VERDICT-4d7f20a5227f1895297aa106: GO
