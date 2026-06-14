@@ -213,6 +213,90 @@ export const OUTBOUND_CONNECTORS: readonly OutboundConnectorDescriptor[] = [
     enabledByDefault: true,
     source: "server/src/services/workspace-runtime.ts",
   },
+  {
+    id: "anthropic-models",
+    title: "Anthropic model discovery",
+    purpose:
+      "Lists available Claude models from the Anthropic API for the Claude adapter when an API key is configured.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://api.anthropic.com/v1/models", "${ANTHROPIC_BASE_URL}/v1/models"],
+    controls: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK"],
+    enabledByDefault: false,
+    source: "packages/adapters/claude-local/src/server/models.ts",
+  },
+  {
+    id: "anthropic-quota",
+    title: "Anthropic usage quota",
+    purpose:
+      "Polls the Anthropic OAuth usage endpoint to display Claude subscription quota windows when a local Claude session is present.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://api.anthropic.com/api/oauth/usage"],
+    controls: ["(local Claude OAuth credentials)", "CLAUDE_CONFIG_DIR"],
+    enabledByDefault: false,
+    source: "packages/adapters/claude-local/src/server/quota.ts",
+  },
+  {
+    id: "chatgpt-quota",
+    title: "ChatGPT/Codex usage quota",
+    purpose:
+      "Polls the ChatGPT usage backend to display Codex/ChatGPT subscription quota windows when a local Codex session is present.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://chatgpt.com/backend-api/wham/usage"],
+    controls: ["(local Codex/ChatGPT auth token)", "CODEX_HOME"],
+    enabledByDefault: false,
+    source: "packages/adapters/codex-local/src/server/quota.ts",
+  },
+  {
+    id: "cloudflare-sandbox-bridge",
+    title: "Cloudflare sandbox bridge",
+    purpose:
+      "Drives remote sandbox lifecycle (lease/probe/exec) via the configured Cloudflare sandbox bridge when the Cloudflare sandbox provider is selected.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["${cloudflare.bridgeBaseUrl}/api/paperclip-sandbox/v1/*"],
+    controls: ["(Cloudflare sandbox provider configuration: bridge base URL + auth token)"],
+    enabledByDefault: false,
+    source: "packages/plugins/sandbox-providers/cloudflare/src/bridge-client.ts",
+  },
+  {
+    id: "exe-dev-sandbox",
+    title: "exe.dev sandbox execution",
+    purpose:
+      "Provisions and executes commands in exe.dev remote sandboxes when the exe.dev sandbox provider is selected.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://exe.dev/exec", "(per-lease exe.dev VM URL)"],
+    controls: ["(exe.dev sandbox provider configuration: API URL + token)"],
+    enabledByDefault: false,
+    source: "packages/plugins/sandbox-providers/exe-dev/src/plugin.ts",
+  },
+  {
+    id: "kubernetes-sandbox",
+    title: "Kubernetes sandbox API",
+    purpose:
+      "Talks to a configured Kubernetes API server to manage sandbox pods when the Kubernetes sandbox provider is selected.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["(configured Kubernetes API server)"],
+    controls: ["(Kubernetes sandbox provider kubeconfig / in-cluster configuration)"],
+    enabledByDefault: false,
+    source: "packages/plugins/sandbox-providers/kubernetes/src/kube-client.ts",
+  },
+  {
+    id: "mcp-control-plane-client",
+    title: "Paperclip MCP API client",
+    purpose:
+      "The Paperclip MCP server calls back to the configured Paperclip control-plane API on behalf of an agent.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["${PAPERCLIP_API_URL}"],
+    controls: ["PAPERCLIP_API_URL", "PAPERCLIP_API_KEY"],
+    enabledByDefault: false,
+    source: "packages/mcp-server/src/client.ts",
+  },
 ] as const;
 
 export interface OutboundConnectorState extends OutboundConnectorDescriptor {

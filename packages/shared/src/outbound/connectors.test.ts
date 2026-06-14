@@ -17,7 +17,50 @@ function stateById(states: ReturnType<typeof getOutboundConnectorStates>, id: st
   return found;
 }
 
+/**
+ * Every outbound network source path the audit identified. The catalog claims to
+ * be the complete source of truth for outbound traffic, so this list is the
+ * tripwire: if a connector's `source` is dropped (or a new outbound path is added
+ * to the codebase without being catalogued here), the coverage test below fails.
+ *
+ * The first block is the reviewer-flagged set that was previously omitted; the
+ * rest are the connectors that were already catalogued.
+ */
+const REQUIRED_OUTBOUND_SOURCE_PATHS = [
+  // Reviewer-flagged outbound paths (DAAS-1053 / T259 gate findings).
+  "packages/adapters/claude-local/src/server/models.ts",
+  "packages/adapters/claude-local/src/server/quota.ts",
+  "packages/adapters/codex-local/src/server/quota.ts",
+  "packages/plugins/sandbox-providers/cloudflare/src/bridge-client.ts",
+  // Additional outbound paths surfaced in the same audit.
+  "packages/plugins/sandbox-providers/exe-dev/src/plugin.ts",
+  "packages/plugins/sandbox-providers/kubernetes/src/kube-client.ts",
+  "packages/mcp-server/src/client.ts",
+  // Previously-catalogued outbound paths.
+  "packages/shared/src/telemetry/client.ts",
+  "server/src/services/feedback-share-client.ts",
+  "server/src/routes/daas-integrations.ts",
+  "server/src/services/github-fetch.ts",
+  "server/src/routes/access.ts",
+  "server/src/services/plugin-host-services.ts",
+  "server/src/routes/plugin-ui-static.ts",
+  "server/src/adapters/http/execute.ts",
+  "server/src/adapters/codex-models.ts",
+  "server/src/secrets/aws-secrets-manager-provider.ts",
+  "server/src/services/cloud-upstreams.ts",
+  "server/src/services/workspace-runtime.ts",
+] as const;
+
 describe("OUTBOUND_CONNECTORS catalog", () => {
+  it("catalogs every known outbound network source path", () => {
+    const sources = OUTBOUND_CONNECTORS.map((connector) => connector.source);
+    for (const path of REQUIRED_OUTBOUND_SOURCE_PATHS) {
+      expect(sources, `OUTBOUND_CONNECTORS is missing outbound source path: ${path}`).toContain(
+        path,
+      );
+    }
+  });
+
   it("has unique ids and documents every connector with a source and destination", () => {
     const ids = OUTBOUND_CONNECTORS.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);

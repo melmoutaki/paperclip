@@ -45,6 +45,13 @@ Activation describes *when* a connector can emit:
 | GitHub content fetch | `api.github.com`, `raw.githubusercontent.com`, GHE `/api/v3` | on_demand | user-initiated import |
 | Invite URL reachability probe | admin-supplied public base URL | on_demand | admin-initiated invite configuration |
 | OpenAI model listing | `api.openai.com/v1/models` | conditional | `OPENAI_API_KEY` / `config.llm` |
+| Anthropic model discovery | `api.anthropic.com/v1/models` (or `ANTHROPIC_BASE_URL`) | conditional | `ANTHROPIC_API_KEY` (Claude adapter) |
+| Anthropic usage quota | `api.anthropic.com/api/oauth/usage` | conditional | local Claude OAuth credentials |
+| ChatGPT/Codex usage quota | `chatgpt.com/backend-api/wham/usage` | conditional | local Codex/ChatGPT auth token |
+| Cloudflare sandbox bridge | `${bridgeBaseUrl}/api/paperclip-sandbox/v1/*` | conditional | Cloudflare sandbox provider config |
+| exe.dev sandbox execution | `exe.dev/exec`, per-lease VM URL | conditional | exe.dev sandbox provider config |
+| Kubernetes sandbox API | configured Kubernetes API server | conditional | Kubernetes sandbox provider kubeconfig / in-cluster |
+| Paperclip MCP API client | `${PAPERCLIP_API_URL}` | conditional | `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY` |
 | AWS Secrets Manager | `secretsmanager.<region>.amazonaws.com` | conditional | `PAPERCLIP_SECRETS_PROVIDER=aws_secrets_manager` + AWS creds |
 | Workspace runtime probe | user-defined workspace service URL (typically loopback) | on_demand | workspace runtime configuration |
 

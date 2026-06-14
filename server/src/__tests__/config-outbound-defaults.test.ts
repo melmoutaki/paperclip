@@ -23,6 +23,15 @@ const TELEMETRY_ENV_KEYS = [
   "PAPERCLIP_FEEDBACK_EXPORT_BACKEND_TOKEN",
   "PAPERCLIP_TELEMETRY_BACKEND_URL",
   "PAPERCLIP_TELEMETRY_BACKEND_TOKEN",
+  // Universal telemetry kill switches — cleared so the resolver-backed
+  // telemetryEnabled state is deterministic regardless of where tests run
+  // (e.g. CI=true would otherwise force telemetry off).
+  "DO_NOT_TRACK",
+  "CI",
+  "CONTINUOUS_INTEGRATION",
+  "BUILD_NUMBER",
+  "GITHUB_ACTIONS",
+  "GITLAB_CI",
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -59,6 +68,25 @@ describe("loadConfig — DAAS outbound defaults", () => {
       telemetry: { enabled: true },
     });
     expect(loadConfig().telemetryEnabled).toBe(true);
+  });
+
+  it("resolves telemetryEnabled from the env opt-in switch", () => {
+    // Regression: loadConfig() previously ignored PAPERCLIP_TELEMETRY_ENABLED and
+    // only reflected the config file, so callers saw stale live state.
+    process.env.PAPERCLIP_TELEMETRY_ENABLED = "1";
+    expect(loadConfig().telemetryEnabled).toBe(true);
+  });
+
+  it("forces telemetryEnabled off via the universal kill switch even when opted in", () => {
+    process.env.PAPERCLIP_TELEMETRY_ENABLED = "1";
+    process.env.PAPERCLIP_TELEMETRY_DISABLED = "1";
+    expect(loadConfig().telemetryEnabled).toBe(false);
+  });
+
+  it("fails closed when telemetry is enabled against an enforcing enterprise policy", () => {
+    process.env.PAPERCLIP_TELEMETRY_ENABLED = "1";
+    process.env.PAPERCLIP_ENTERPRISE_TELEMETRY_POLICY = "enforce_disabled";
+    expect(() => loadConfig()).toThrow(/forbids it/i);
   });
 
   it("enables feedback sharing only when the env opts in", () => {

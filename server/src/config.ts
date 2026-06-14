@@ -20,6 +20,7 @@ import {
   type StorageProvider,
   inferBindModeFromHost,
   resolveRuntimeBind,
+  resolveTelemetryConfig,
   validateConfiguredBindMode,
 } from "@paperclipai/shared";
 import {
@@ -338,6 +339,11 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     // DAAS fork: telemetry is off unless explicitly opted in via config or env.
-    telemetryEnabled: fileConfig?.telemetry?.enabled ?? false,
+    // Resolve through the shared telemetry resolver so loadConfig() reports the
+    // same live state initTelemetry() acts on — honouring the env opt-in
+    // (PAPERCLIP_TELEMETRY_ENABLED), the universal kill switches, and the
+    // fail-closed enterprise policy (this throws on an enabled-vs-enforced
+    // conflict rather than silently reporting a stale value).
+    telemetryEnabled: resolveTelemetryConfig(fileConfig?.telemetry, process.env).enabled,
   };
 }
