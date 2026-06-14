@@ -56,6 +56,11 @@ const REQUIRED_OUTBOUND_SOURCE_PATHS = [
   "server/src/secrets/aws-secrets-manager-provider.ts",
   "server/src/services/cloud-upstreams.ts",
   "server/src/services/workspace-runtime.ts",
+  // npm registry / external-adapter install paths flagged in the T259 gate
+  // follow-up (fork-critical for external adapters such as Hermes).
+  "server/src/routes/adapters.ts",
+  "server/src/services/plugin-loader.ts",
+  "ui/src/pages/AdapterManager.tsx",
 ] as const;
 
 describe("OUTBOUND_CONNECTORS catalog", () => {

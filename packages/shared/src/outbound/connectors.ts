@@ -326,6 +326,50 @@ export const OUTBOUND_CONNECTORS: readonly OutboundConnectorDescriptor[] = [
     enabledByDefault: false,
     source: "packages/adapters/openclaw-gateway/src/server/execute.ts",
   },
+  {
+    id: "npm-adapter-install",
+    title: "External adapter npm install",
+    purpose:
+      "Installs and reinstalls external agent adapter packages (fork-critical for adapters such as Hermes) from the configured npm registry when an instance admin installs or updates an adapter.",
+    classification: "required",
+    activation: "on_demand",
+    destinations: ["https://registry.npmjs.org", "(configured npm registry)"],
+    controls: [
+      "(instance-admin-initiated adapter install/reinstall)",
+      "NPM_CONFIG_REGISTRY",
+      "(.npmrc registry configuration)",
+    ],
+    enabledByDefault: true,
+    source: "server/src/routes/adapters.ts",
+  },
+  {
+    id: "npm-plugin-install",
+    title: "Plugin npm install",
+    purpose:
+      "Installs plugin packages (with --ignore-scripts) from the configured npm registry when a plugin is installed from npm rather than a local path.",
+    classification: "required",
+    activation: "on_demand",
+    destinations: ["https://registry.npmjs.org", "(configured npm registry)"],
+    controls: [
+      "(plugin install action: npm package name + version)",
+      "NPM_CONFIG_REGISTRY",
+      "(.npmrc registry configuration)",
+    ],
+    enabledByDefault: true,
+    source: "server/src/services/plugin-loader.ts",
+  },
+  {
+    id: "npm-registry-version-check",
+    title: "Adapter npm version check",
+    purpose:
+      "Browser-side fetch of an external adapter package's latest published version from the npm registry, to show update availability in the Adapter Manager reinstall dialog.",
+    classification: "required",
+    activation: "on_demand",
+    destinations: ["https://registry.npmjs.org/<package>/latest"],
+    controls: ["(admin-opened adapter reinstall dialog)"],
+    enabledByDefault: true,
+    source: "ui/src/pages/AdapterManager.tsx",
+  },
 ] as const;
 
 export interface OutboundConnectorState extends OutboundConnectorDescriptor {

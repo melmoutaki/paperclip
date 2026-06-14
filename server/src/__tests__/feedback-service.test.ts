@@ -1140,4 +1140,46 @@ describe("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.failureReason).toBe("Feedback export backend is not configured");
     expect(traces[0]?.exportedAt).toBeNull();
   });
+
+  it("skips background flush work entirely while feedback sharing is disabled", async () => {
+    const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
+    const uploadTraceBundle = vi.fn().mockResolvedValue({ objectKey: "feedback-traces/test.json" });
+    // Mirrors production wiring with PAPERCLIP_FEEDBACK_SHARING_ENABLED unset /
+    // feedbackSharingEnabled false: a share client exists but the gate is off.
+    const disabledSvc = feedbackService(db, {
+      shareClient: { uploadTraceBundle },
+      feedbackSharingEnabled: false,
+    });
+
+    await disabledSvc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    // Two flush cycles, as the background worker would run on an interval.
+    const first = await disabledSvc.flushPendingFeedbackTraces();
+    const second = await disabledSvc.flushPendingFeedbackTraces();
+
+    expect(first).toMatchObject({ attempted: 0, sent: 0, failed: 0, skipped: "sharing_disabled" });
+    expect(second).toMatchObject({ attempted: 0, sent: 0, failed: 0, skipped: "sharing_disabled" });
+    // No bundle was ever built or uploaded — the disabled client is never called.
+    expect(uploadTraceBundle).not.toHaveBeenCalled();
+
+    const traces = await disabledSvc.listFeedbackTraces({
+      companyId,
+      issueId,
+      includePayload: true,
+    });
+    // The queued trace stays `pending` with attempts never mutated, so later
+    // flushes retry only once sharing is enabled.
+    expect(traces[0]?.status).toBe("pending");
+    expect(traces[0]?.attemptCount).toBe(0);
+    expect(traces[0]?.lastAttemptedAt).toBeNull();
+    expect(traces[0]?.failureReason).toBeNull();
+    expect(traces[0]?.exportedAt).toBeNull();
+  });
 });

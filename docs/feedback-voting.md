@@ -174,17 +174,17 @@ Your preference is saved per-company. You can change it any time via the feedbac
 | `local_only` | Vote stored locally, not marked for sharing |
 | `pending` | Marked for sharing and saved locally; an upload is attempted only when `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1` |
 | `sent` | Successfully transmitted (only possible while the sharing gate is enabled) |
-| `failed` | Upload attempted but failed — including when sharing is disabled by fork policy (the default), or the backend is unreachable/not configured; later flushes retry only once sharing is enabled |
+| `failed` | An upload was attempted **while sharing was enabled** but failed (e.g. the backend was unreachable or not configured); the worker retries it on later ticks while sharing stays enabled. Disabling sharing does **not** move traces here — they stay `pending`. |
 
 Your local database always retains the full vote and trace data regardless of sharing status.
 
 ## Remote sync
 
-**DAAS fork default: outbound feedback sharing is OFF.** Feedback-trace sharing is a non-required outbound integration and is disabled by default (see [outbound network policy](deploy/outbound-network.md)). No bundle leaves the machine unless `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1` (or `=true`) is set. With the gate off, votes you mark for sharing are still saved locally but every upload attempt fails closed — the trace moves to `failed` with a "sharing disabled by fork policy" reason and **no outbound traffic is generated**, including by the background flush worker.
+**DAAS fork default: outbound feedback sharing is OFF.** Feedback-trace sharing is a non-required outbound integration and is disabled by default (see [outbound network policy](deploy/outbound-network.md)). No bundle leaves the machine unless `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1` (or `=true`) is set. With the gate off, votes you mark for sharing are still saved locally and queued as `pending`, but **no upload is attempted and no outbound traffic is generated** — neither from the vote request nor from the background flush worker. While the gate is off the flush worker short-circuits: it does not select queued rows, rebuild bundles, call the share client, or touch attempt counters. Queued traces stay `pending` and are attempted only once `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1` is set.
 
 When `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1` is set, votes you choose to share are uploaded to the Telemetry Backend immediately from the vote request, and the background flush worker retries any failed traces later. The Telemetry Backend validates the request, then persists the bundle into its configured object storage.
 
-- Gate: uploads only occur when `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1`; otherwise the bundle is never POSTed and the trace stays local/`failed`
+- Gate: uploads only occur when `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1`; otherwise the bundle is never built or POSTed and the trace stays queued as `pending`
 - App server responsibility: when sharing is enabled, build the bundle, POST it to Telemetry Backend, update trace status
 - Telemetry Backend responsibility: authenticate the request, validate payload shape, compress/store the bundle, return the final object key
 - Retry behavior: failed uploads move to `failed` with an error message in `failureReason`; the worker retries them on later ticks only while the sharing gate is enabled

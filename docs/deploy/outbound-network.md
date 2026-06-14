@@ -56,6 +56,9 @@ Activation describes *when* a connector can emit:
 | Paperclip MCP API client | `${PAPERCLIP_API_URL}` | conditional | `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY` |
 | AWS Secrets Manager | `secretsmanager.<region>.amazonaws.com` | conditional | `PAPERCLIP_SECRETS_PROVIDER=aws_secrets_manager` + AWS creds |
 | Workspace runtime probe | user-defined workspace service URL (typically loopback) | on_demand | workspace runtime configuration |
+| External adapter npm install | `registry.npmjs.org` (or configured npm registry) | on_demand | instance-admin adapter install/reinstall; `NPM_CONFIG_REGISTRY` / `.npmrc` |
+| Plugin npm install | `registry.npmjs.org` (or configured npm registry) | on_demand | plugin install from npm (`--ignore-scripts`); `NPM_CONFIG_REGISTRY` / `.npmrc` |
+| Adapter npm version check | `registry.npmjs.org/<package>/latest` | on_demand | admin-opened adapter reinstall dialog (browser fetch) |
 
 ## Enterprise telemetry policy (fail-closed)
 
