@@ -297,6 +297,35 @@ export const OUTBOUND_CONNECTORS: readonly OutboundConnectorDescriptor[] = [
     enabledByDefault: false,
     source: "packages/mcp-server/src/client.ts",
   },
+  {
+    id: "skills-catalog-github",
+    title: "Skills catalog GitHub fetch",
+    purpose:
+      "Builds the skills/companies catalog by fetching repository trees and pinned file contents from GitHub / GitHub Enterprise for a user-supplied source repo.",
+    classification: "required",
+    activation: "on_demand",
+    destinations: [
+      "https://api.github.com",
+      "https://raw.githubusercontent.com",
+      "https://<github-enterprise-host>/api/v3",
+      "https://<github-enterprise-host>/raw",
+    ],
+    controls: ["(user-supplied catalog source repo URL/hostname)"],
+    enabledByDefault: true,
+    source: "packages/skills-catalog/src/catalog-builder.ts",
+  },
+  {
+    id: "openclaw-gateway-ws",
+    title: "OpenClaw gateway WebSocket",
+    purpose:
+      "Opens a WebSocket to a configured OpenClaw gateway to execute agent runs when the openclaw-gateway adapter is configured with a gateway URL.",
+    classification: "non_required",
+    activation: "conditional",
+    destinations: ["(configured openclaw-gateway ws:// or wss:// URL)"],
+    controls: ["(openclaw-gateway adapter configuration: url + headers)"],
+    enabledByDefault: false,
+    source: "packages/adapters/openclaw-gateway/src/server/execute.ts",
+  },
 ] as const;
 
 export interface OutboundConnectorState extends OutboundConnectorDescriptor {

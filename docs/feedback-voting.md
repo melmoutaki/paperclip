@@ -172,20 +172,23 @@ Your preference is saved per-company. You can change it any time via the feedbac
 | Status | Meaning |
 |--------|---------|
 | `local_only` | Vote stored locally, not marked for sharing |
-| `pending` | Marked for sharing, saved locally, and waiting for the immediate upload attempt |
-| `sent` | Successfully transmitted |
-| `failed` | Transmission attempted but failed (for example the backend is unreachable or not configured); later flushes retry once a backend is available |
+| `pending` | Marked for sharing and saved locally; an upload is attempted only when `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1` |
+| `sent` | Successfully transmitted (only possible while the sharing gate is enabled) |
+| `failed` | Upload attempted but failed — including when sharing is disabled by fork policy (the default), or the backend is unreachable/not configured; later flushes retry only once sharing is enabled |
 
 Your local database always retains the full vote and trace data regardless of sharing status.
 
 ## Remote sync
 
-Votes you choose to share are sent to the Telemetry Backend immediately from the vote request. The server also keeps a background flush worker so failed traces can retry later. The Telemetry Backend validates the request, then persists the bundle into its configured object storage.
+**DAAS fork default: outbound feedback sharing is OFF.** Feedback-trace sharing is a non-required outbound integration and is disabled by default (see [outbound network policy](deploy/outbound-network.md)). No bundle leaves the machine unless `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1` (or `=true`) is set. With the gate off, votes you mark for sharing are still saved locally but every upload attempt fails closed — the trace moves to `failed` with a "sharing disabled by fork policy" reason and **no outbound traffic is generated**, including by the background flush worker.
 
-- App server responsibility: build the bundle, POST it to Telemetry Backend, update trace status
+When `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1` is set, votes you choose to share are uploaded to the Telemetry Backend immediately from the vote request, and the background flush worker retries any failed traces later. The Telemetry Backend validates the request, then persists the bundle into its configured object storage.
+
+- Gate: uploads only occur when `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1`; otherwise the bundle is never POSTed and the trace stays local/`failed`
+- App server responsibility: when sharing is enabled, build the bundle, POST it to Telemetry Backend, update trace status
 - Telemetry Backend responsibility: authenticate the request, validate payload shape, compress/store the bundle, return the final object key
-- Retry behavior: failed uploads move to `failed` with an error message in `failureReason`, and the worker retries them on later ticks
-- Default endpoint: when no feedback export backend URL is configured, Paperclip falls back to `https://telemetry.paperclip.ing`
+- Retry behavior: failed uploads move to `failed` with an error message in `failureReason`; the worker retries them on later ticks only while the sharing gate is enabled
+- Default endpoint: when sharing is enabled and no feedback export backend URL is configured, Paperclip falls back to `https://telemetry.paperclip.ing`
 - Important nuance: the uploaded object is a snapshot of the full bundle at vote time. If you fetch a local bundle later and the underlying adapter session file has continued to grow, the local regenerated bundle may be larger than the already-uploaded snapshot for that same trace.
 
 Exported objects use a deterministic key pattern so they are easy to inspect:

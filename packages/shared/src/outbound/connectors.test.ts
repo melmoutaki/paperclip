@@ -18,20 +18,27 @@ function stateById(states: ReturnType<typeof getOutboundConnectorStates>, id: st
 }
 
 /**
- * Every outbound network source path the audit identified. The catalog claims to
- * be the complete source of truth for outbound traffic, so this list is the
- * tripwire: if a connector's `source` is dropped (or a new outbound path is added
- * to the codebase without being catalogued here), the coverage test below fails.
+ * The current, manually-curated list of audited outbound network source paths.
  *
- * The first block is the reviewer-flagged set that was previously omitted; the
- * rest are the connectors that were already catalogued.
+ * This list is NOT mechanically derived from the codebase — it is maintained by
+ * hand as outbound-capable files are discovered and audited. The coverage test
+ * below asserts that every path here is catalogued in {@link OUTBOUND_CONNECTORS}:
+ * it guards against a connector's `source` being dropped from the catalog, but it
+ * cannot by itself detect a brand-new outbound call site that nobody added here.
+ * When new outbound traffic is introduced, both the catalog and this list must be
+ * updated together (see docs/deploy/outbound-network.md).
+ *
+ * It is kept in sync with the known audited outbound source list as of the
+ * DAAS-1053 / T259 outbound audit, including the paths the validator flagged.
  */
 const REQUIRED_OUTBOUND_SOURCE_PATHS = [
-  // Reviewer-flagged outbound paths (DAAS-1053 / T259 gate findings).
+  // Outbound paths flagged across the DAAS-1053 / T259 gate reviews.
   "packages/adapters/claude-local/src/server/models.ts",
   "packages/adapters/claude-local/src/server/quota.ts",
   "packages/adapters/codex-local/src/server/quota.ts",
   "packages/plugins/sandbox-providers/cloudflare/src/bridge-client.ts",
+  "packages/skills-catalog/src/catalog-builder.ts",
+  "packages/adapters/openclaw-gateway/src/server/execute.ts",
   // Additional outbound paths surfaced in the same audit.
   "packages/plugins/sandbox-providers/exe-dev/src/plugin.ts",
   "packages/plugins/sandbox-providers/kubernetes/src/kube-client.ts",
@@ -52,7 +59,7 @@ const REQUIRED_OUTBOUND_SOURCE_PATHS = [
 ] as const;
 
 describe("OUTBOUND_CONNECTORS catalog", () => {
-  it("catalogs every known outbound network source path", () => {
+  it("catalogs every audited outbound source path in the curated list", () => {
     const sources = OUTBOUND_CONNECTORS.map((connector) => connector.source);
     for (const path of REQUIRED_OUTBOUND_SOURCE_PATHS) {
       expect(sources, `OUTBOUND_CONNECTORS is missing outbound source path: ${path}`).toContain(

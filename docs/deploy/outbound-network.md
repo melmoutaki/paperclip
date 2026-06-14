@@ -36,6 +36,7 @@ Activation describes *when* a connector can emit:
 | Plugin UI dev proxy | configured plugin UI dev-server URL | conditional | plugin UI dev-server configuration |
 | HTTP agent adapter | user-configured adapter endpoint | conditional | agent adapter config (blocked for DAAS infra agents) |
 | Cloud upstream sync | configured cloud upstream URL | conditional | cloud upstream connection config |
+| OpenClaw gateway WebSocket | configured openclaw-gateway `ws://`/`wss://` URL | conditional | openclaw-gateway adapter config (url + headers) |
 
 ## Required connectors
 
@@ -43,6 +44,7 @@ Activation describes *when* a connector can emit:
 |-----------|-------------|------------|------|
 | DAAS governed mission handoff | `${DAAS_BASE_URL}/api/missions` | conditional | `DAAS_BASE_URL`, `DAAS_API_SHARED_SECRET` |
 | GitHub content fetch | `api.github.com`, `raw.githubusercontent.com`, GHE `/api/v3` | on_demand | user-initiated import |
+| Skills catalog GitHub fetch | `api.github.com`, `raw.githubusercontent.com`, GHE `/api/v3` + `/raw` | on_demand | user-supplied catalog source repo URL/hostname |
 | Invite URL reachability probe | admin-supplied public base URL | on_demand | admin-initiated invite configuration |
 | OpenAI model listing | `api.openai.com/v1/models` | conditional | `OPENAI_API_KEY` / `config.llm` |
 | Anthropic model discovery | `api.anthropic.com/v1/models` (or `ANTHROPIC_BASE_URL`) | conditional | `ANTHROPIC_API_KEY` (Claude adapter) |
