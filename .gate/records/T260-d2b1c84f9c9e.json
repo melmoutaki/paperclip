@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T260",
+  "title": "Add Paperclip startup/health check showing fork version, telemetry state and dangerous connector disabled state",
+  "author_engine": "codex",
+  "author_pool": "OAI-C55-DEVOPS",
+  "reviewer_engine": "claude",
+  "reviewer_cli_version": "2.1.169 (Claude Code)",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "fbb5fe0ecd43d69d3c9507732741e95e596560e1",
+  "reviewed_sha": "d2b1c84f9c9e9efe0c7475c7a378d1964da08ce6",
+  "diff_sha256": "82a460f95814368f4adf3f5c003f29021e5c7c1f2765797642f6a7a60066d9d6",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "2e6045c2c9b4867627d941ff",
+  "review_log": ".gate/records/T260-d2b1c84f9c9e.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}
