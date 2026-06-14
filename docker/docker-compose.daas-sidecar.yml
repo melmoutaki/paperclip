@@ -1,0 +1,76 @@
+services:
+  paperclip-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD_FILE: /run/secrets/paperclip_db_password
+      POSTGRES_DB: paperclip
+    secrets:
+      - paperclip_db_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - paperclip-db-data:/var/lib/postgresql/data
+
+  paperclip-sidecar:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      paperclip-db:
+        condition: service_healthy
+    ports:
+      - "${PAPERCLIP_SIDECAR_PORT:-3101}:3100"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_HOME: "/paperclip"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_BASE_URL:-http://localhost:3101}"
+      PAPERCLIP_DAAS_PATCH_VERSION: "${PAPERCLIP_DAAS_PATCH_VERSION:-daas/patches}"
+      PAPERCLIP_TELEMETRY_DISABLED: "1"
+      PAPERCLIP_ENTERPRISE_TELEMETRY_POLICY: "enforce_disabled"
+      DO_NOT_TRACK: "1"
+      PAPERCLIP_FEEDBACK_SHARING_ENABLED: "0"
+      DAAS_BASE_URL: "${DAAS_BASE_URL:-http://host.docker.internal:8000}"
+      PAPERCLIP_WEBHOOK_SECRET: "${PAPERCLIP_WEBHOOK_SECRET:?set PAPERCLIP_WEBHOOK_SECRET}"
+      DAAS_API_SHARED_SECRET: "${DAAS_API_SHARED_SECRET:?set DAAS_API_SHARED_SECRET}"
+      BETTER_AUTH_SECRET: "${PAPERCLIP_BETTER_AUTH_SECRET:?set PAPERCLIP_BETTER_AUTH_SECRET}"
+    secrets:
+      - paperclip_db_password
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        db_secret=$$(cat /run/secrets/paperclip_db_password)
+        export DATABASE_URL=$$(printf '%s%s%s' \
+          'postgres://paperclip:' \
+          "$$db_secret" \
+          '@paperclip-db:5432/paperclip')
+        exec node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3100/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - paperclip-sidecar-data:/paperclip
+
+volumes:
+  paperclip-db-data:
+  paperclip-sidecar-data:
+
+secrets:
+  paperclip_db_password:
+    environment: PAPERCLIP_DB_PASSWORD
