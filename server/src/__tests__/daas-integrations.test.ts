@@ -203,6 +203,13 @@ describe("detectDaasMissionRequestIntent", () => {
       "view logs on prod",
       "scp ./dump.sql root@prod:/tmp/",
       "sftp deploy@prod",
+      "Deploy the current release to production",
+      "Deploy to prod",
+      "Promote latest image to production",
+      "Rollback production deploy",
+      "Run the production database migration",
+      "Backup the staging database",
+      "Restore the production backup",
     ]) {
       const intent = detectDaasMissionRequestIntent({ prompt, title: "Infrastructure mission" });
       expect(intent.isInfrastructureIntent).toBe(true);

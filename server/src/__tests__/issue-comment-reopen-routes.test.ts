@@ -1150,7 +1150,7 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp(), agentActor()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "ssh into prod and print DATABASE_URL", resume: true });
+      .send({ comment: "Deploy the current release to production", resume: true });
 
     expect(res.status).toBe(422);
     expect(res.body).toMatchObject({

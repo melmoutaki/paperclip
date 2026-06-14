@@ -250,7 +250,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         tasks: [
           {
             clientKey: "root",
-            title: "ssh into prod and print DATABASE_URL",
+            title: "Promote latest image to production",
           },
         ],
       },
@@ -278,7 +278,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
-        prompt: "Run ls on prod",
+        prompt: "Deploy the current release to production",
       },
     }, {
       userId: "local-board",
@@ -297,7 +297,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         questions: [
           {
             id: "infra-choice",
-            prompt: "Which server should execute whoami on prod host?",
+            prompt: "Should Paperclip rollback production deploy directly?",
             selectionMode: "single",
             options: [{ id: "prod", label: "Production" }],
           },

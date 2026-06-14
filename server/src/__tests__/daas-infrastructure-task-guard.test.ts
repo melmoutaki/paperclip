@@ -218,6 +218,18 @@ describe("detectDaasInfrastructureTaskIntent", () => {
     expect(detectDaasInfrastructureTaskIntent("Deploy to production using kubectl").signals).toContain(
       "infra.orchestration",
     );
+    for (const text of [
+      "Deploy the current release to production",
+      "Deploy to prod",
+      "Promote latest image to production",
+      "Rollback production deploy",
+      "Roll back the last deployment in prod",
+      "Run the production database migration",
+      "Backup the staging database",
+      "Restore the production backup",
+    ]) {
+      expect(detectDaasInfrastructureTaskIntent(text).signals).toContain("infra.orchestration");
+    }
   });
 
   it("does not flag ordinary product/engineering tasks", () => {
@@ -327,6 +339,14 @@ describe("guardDaasInfrastructureTaskDispatch", () => {
       "view logs on prod",
       "scp ./dump.sql root@prod:/tmp/",
       "sftp deploy@prod",
+      "Deploy the current release to production",
+      "Deploy to prod",
+      "Promote latest image to production",
+      "Rollback production deploy",
+      "Roll back the last deployment in prod",
+      "Run the production database migration",
+      "Backup the staging database",
+      "Restore the production backup",
     ]) {
       expect(guardDaasInfrastructureTaskDispatch({ title })).toMatchObject({
         allowed: false,

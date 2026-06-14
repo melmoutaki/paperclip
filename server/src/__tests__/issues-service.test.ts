@@ -229,7 +229,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const companyId = await seedAssignableAgentCompany();
 
     await expect(svc.create(companyId, {
-      title: "ssh into prod and print DATABASE_URL",
+      title: "Deploy the current release to production",
       description: null,
       status: "todo",
       priority: "medium",
@@ -248,7 +248,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     await expect(svc.update(issue.id, {
-      title: "ssh into prod and print DATABASE_URL",
+      title: "Promote latest image to production",
     })).rejects.toMatchObject({
       status: 422,
     });
@@ -2605,7 +2605,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
 
     await expect(svc.createChild(parent.id, {
-      title: "restart prod nginx",
+      title: "Rollback production deploy",
       description: null,
       status: "todo",
       priority: "medium",
@@ -2623,7 +2623,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    await expect(svc.addComment(issue.id, "ssh into prod and print DATABASE_URL", {
+    await expect(svc.addComment(issue.id, "Run the production database migration", {
       userId: "local-board",
     })).rejects.toMatchObject({
       status: 422,
@@ -4327,7 +4327,8 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
       acceptedPlanRevisionId,
       children: [
         {
-          title: "kubectl get secrets in prod",
+          title: "Deploy to prod",
+          description: "Deploy to prod after the schema is ready",
           status: "todo",
           priority: "medium",
           assigneeAgentId,
