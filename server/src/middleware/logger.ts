@@ -2,8 +2,10 @@ import path from "node:path";
 import fs from "node:fs";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
+import { DAAS_PAPERCLIP_MISSIONS_ROUTE } from "@paperclipai/shared";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
+import { REDACTED_EVENT_VALUE, redactSensitiveText, sanitizeRecord } from "../redaction.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 
 function resolveServerLogDir(): string {
@@ -27,9 +29,49 @@ const sharedOpts = {
   singleLine: true,
 };
 
+export const HTTP_LOG_REDACT_PATHS = [
+  "req.headers.authorization",
+  "req.headers.x-paperclip-webhook-secret",
+  'req.headers["x-paperclip-webhook-secret"]',
+];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+export function sanitizeHttpLogPayload(value: unknown): unknown {
+  if (typeof value === "string") return redactSensitiveText(value);
+  if (Array.isArray(value)) return value.map(sanitizeHttpLogPayload);
+  if (!isPlainObject(value)) return value;
+  const redacted = sanitizeRecord(value);
+  return Object.fromEntries(
+    Object.entries(redacted).map(([key, entry]) => [
+      key,
+      typeof entry === "string" ? redactSensitiveText(entry) : sanitizeHttpLogPayload(entry),
+    ]),
+  );
+}
+
+function shouldSuppressErrorRequestBody(req: { originalUrl?: string; url?: string }) {
+  const originalUrl = req.originalUrl ?? "";
+  const url = req.url ?? "";
+  return originalUrl.startsWith(DAAS_PAPERCLIP_MISSIONS_ROUTE) ||
+    url.startsWith(DAAS_PAPERCLIP_MISSIONS_ROUTE.replace(/^\/api/, ""));
+}
+
+export function readSafeErrorRequestBody(req: { originalUrl?: string; url?: string; body?: unknown }) {
+  if (!req.body || typeof req.body !== "object" || Object.keys(req.body).length === 0) return undefined;
+  if (shouldSuppressErrorRequestBody(req)) {
+    return { redacted: true, reason: "sensitive_route", value: REDACTED_EVENT_VALUE };
+  }
+  return sanitizeHttpLogPayload(req.body);
+}
+
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: HTTP_LOG_REDACT_PATHS,
 }, pino.transport({
   targets: [
     {
@@ -69,15 +111,18 @@ export const httpLogger = pinoHttp({
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: ctx.reqBody,
+          reqBody: shouldSuppressErrorRequestBody(req)
+            ? { redacted: true, reason: "sensitive_route", value: REDACTED_EVENT_VALUE }
+            : sanitizeHttpLogPayload(ctx.reqBody),
           reqParams: ctx.reqParams,
           reqQuery: ctx.reqQuery,
         };
       }
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
-      if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+      const safeReqBody = readSafeErrorRequestBody(req as any);
+      if (safeReqBody !== undefined) {
+        props.reqBody = safeReqBody;
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = params;

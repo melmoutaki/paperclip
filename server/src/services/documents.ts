@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { detectDaasInfrastructureTaskIntent } from "./daas-infrastructure-task-guard.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -11,6 +12,15 @@ function normalizeDocumentKey(key: string) {
     throw unprocessable("Invalid document key", parsed.error.issues);
   }
   return parsed.data;
+}
+
+function assertNoDaasInfrastructureDocumentIntent(...texts: Array<string | null | undefined>) {
+  const result = detectDaasInfrastructureTaskIntent(...texts);
+  if (!result.isInfrastructureIntent) return;
+  throw unprocessable("Infrastructure document content must be routed through the DAAS mission adapter", {
+    route: "/api/integrations/paperclip/missions",
+    signals: result.signals,
+  });
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -209,6 +219,7 @@ export function documentService(db: Db) {
       lockedDocumentStrategy?: "conflict" | "create_new_document";
     }) => {
       const key = normalizeDocumentKey(input.key);
+      assertNoDaasInfrastructureDocumentIntent(input.title, input.body, input.changeSummary);
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
@@ -557,6 +568,11 @@ export function documentService(db: Db) {
             currentRevisionId: existing.latestRevisionId,
           });
         }
+        assertNoDaasInfrastructureDocumentIntent(
+          revision.title ?? null,
+          revision.body,
+          `Restored from revision ${revision.revisionNumber}`,
+        );
 
         const now = new Date();
         const nextRevisionNumber = existing.latestRevisionNumber + 1;

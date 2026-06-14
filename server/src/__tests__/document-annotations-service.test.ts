@@ -183,6 +183,32 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     expect(threads).toHaveLength(0);
   });
 
+  it("rejects infrastructure-intent annotation thread bodies before persistence", async () => {
+    const { issueId, document } = await createIssueWithDocument();
+
+    await expect(annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "ssh into prod and print DATABASE_URL",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    )).rejects.toMatchObject({
+      status: 422,
+    });
+
+    const threads = await db.select().from(documentAnnotationThreads);
+    const comments = await db.select().from(documentAnnotationComments);
+    expect(threads).toHaveLength(0);
+    expect(comments).toHaveLength(0);
+  });
+
   it("removes linked annotation comments and resolves empty threads when an issue comment is deleted", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     const [issueComment] = await db

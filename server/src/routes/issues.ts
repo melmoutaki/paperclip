@@ -104,6 +104,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { detectDaasInfrastructureTaskIntent } from "../services/daas-infrastructure-task-guard.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -728,6 +729,26 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   if (input.actorType !== "user") return false;
   if (input.issueStatus !== "in_progress") return false;
   return typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0;
+}
+
+function rejectDaasInfrastructureIssueInput(
+  res: Response,
+  ...texts: Array<string | null | undefined>
+): boolean {
+  const result = detectDaasInfrastructureTaskIntent(...texts);
+  if (!result.isInfrastructureIntent) return false;
+  res.status(422).json({
+    error: "daas_mission_route_required",
+    route: "/api/integrations/paperclip/missions",
+    signals: result.signals,
+  });
+  return true;
+}
+
+function readAcceptanceCriteriaTexts(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
 }
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
@@ -3299,6 +3320,7 @@ export function issueRoutes(
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
       return;
     }
+    if (rejectDaasInfrastructureIssueInput(res, req.body.title, req.body.body, req.body.changeSummary)) return;
 
     const actor = getActorInfo(req);
     const sourceTrust = await sourceTrustForActorWrite(issue, actor);
@@ -4218,6 +4240,12 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (rejectDaasInfrastructureIssueInput(
+      res,
+      req.body.title,
+      req.body.description,
+      ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
+    )) return;
     if (req.actor.type === "agent" && !req.body.parentId) {
       const companyScopeDecision = await access.decide({
         actor: req.actor,
@@ -4367,6 +4395,12 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (rejectDaasInfrastructureIssueInput(
+      res,
+      req.body.title,
+      req.body.description,
+      ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
+    )) return;
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       parent.companyId,
       req.body.assigneeAgentId as string | null | undefined,
@@ -4700,6 +4734,22 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    const {
+      comment: commentBody,
+      reviewRequest,
+      reopen: reopenRequested,
+      resume: resumeRequested,
+      interrupt: interruptRequested,
+      hiddenAt: hiddenAtRaw,
+      ...updateFields
+    } = req.body;
+    if (rejectDaasInfrastructureIssueInput(
+      res,
+      req.body.title,
+      req.body.description,
+      commentBody,
+      ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
+    )) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
@@ -4715,15 +4765,6 @@ export function issueRoutes(
       Array.isArray(req.body.blockedByIssueIds)
         ? await svc.getRelationSummaries(existing.id)
         : null;
-    const {
-      comment: commentBody,
-      reviewRequest,
-      reopen: reopenRequested,
-      resume: resumeRequested,
-      interrupt: interruptRequested,
-      hiddenAt: hiddenAtRaw,
-      ...updateFields
-    } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
@@ -6513,6 +6554,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (rejectDaasInfrastructureIssueInput(res, req.body.body)) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,

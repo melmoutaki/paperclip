@@ -54,6 +54,12 @@ import {
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  guardDaasInfrastructureTaskDispatch,
+  collectDaasInfrastructureTaskInstructionTexts,
+  logDaasInfrastructureTaskDenial,
+  stripDaasMissionProvenanceFromUntrustedContext,
+} from "./daas-infrastructure-task-guard.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -1447,6 +1453,21 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function collectWakeCommentIds(contextSnapshot: Record<string, unknown>): string[] {
+  const ids = new Set<string>();
+  const add = (value: unknown) => {
+    const id = readNonEmptyString(value);
+    if (id) ids.add(id);
+  };
+  add(contextSnapshot.commentId);
+  add(contextSnapshot.wakeCommentId);
+  const wakeCommentIds = contextSnapshot[WAKE_COMMENT_IDS_KEY];
+  if (Array.isArray(wakeCommentIds)) {
+    for (const value of wakeCommentIds) add(value);
+  }
+  return [...ids];
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -2425,6 +2446,7 @@ export function mergeCoalescedContextSnapshot(
   incoming: Record<string, unknown>,
 ) {
   const existing = parseObject(existingRaw);
+  stripDaasMissionProvenanceFromUntrustedContext(incoming);
   const merged: Record<string, unknown> = {
     ...existing,
     ...incoming,
@@ -6721,8 +6743,67 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    const wakeupPayload = run.wakeupRequestId
+      ? await db
+        .select({ payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.id, run.wakeupRequestId)))
+        .then((rows) => parseObject(rows[0]?.payload))
+      : {};
+    const wakeCommentIds = collectWakeCommentIds(context);
+    const wakeCommentBodies = wakeCommentIds.length > 0
+      ? await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.companyId, run.companyId),
+          inArray(issueComments.id, wakeCommentIds),
+          isNull(issueComments.deletedAt),
+        ))
+        .then((rows) => rows.map((row) => row.body))
+      : [];
+    let infraTaskTitle: string | null = null;
+    let infraTaskDescription: string | null = null;
+    if (issueId) {
+      const guardIssue = await db
+        .select({ title: issues.title, description: issues.description, projectId: issues.projectId })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+      infraTaskTitle = guardIssue?.title ?? null;
+      infraTaskDescription = guardIssue?.description ?? null;
+      if (!readNonEmptyString(context.projectId) && guardIssue?.projectId) {
+        context.projectId = guardIssue.projectId;
+      }
+    }
+    const infraGuard = guardDaasInfrastructureTaskDispatch({
+      title: infraTaskTitle,
+      description: infraTaskDescription,
+      reason: readNonEmptyString(context.wakeReason),
+      instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
+        contextSnapshot: context,
+        payload: wakeupPayload,
+        reason: readNonEmptyString(context.wakeReason),
+      }).concat(wakeCommentBodies),
+    });
+    if (!infraGuard.allowed) {
+      logDaasInfrastructureTaskDenial(logger, {
+        result: infraGuard,
+        context: {
+          companyId: run.companyId,
+          agentId: run.agentId,
+          issueId,
+          projectId: readNonEmptyString(context.projectId),
+          source: run.invocationSource,
+        },
+      });
+      await cancelRunInternal(run.id, infraGuard.message ?? "DAAS blocked direct infrastructure task dispatch");
+      return null;
+    }
+
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId: readNonEmptyString(context.issueId),
+      issueId,
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
@@ -6730,7 +6811,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
-    const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -8938,6 +9018,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      const finalInfraGuard = guardDaasInfrastructureTaskDispatch({
+        title: issueRef?.title ?? null,
+        description: issueRef?.description ?? null,
+        reason: readNonEmptyString(context.wakeReason),
+        instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
+          contextSnapshot: context,
+          payload: parseObject(context[PAPERCLIP_WAKE_PAYLOAD_KEY]),
+          reason: readNonEmptyString(context.wakeReason),
+        }).concat([
+          taskMarkdown,
+          readNonEmptyString(parseObject(context.paperclipContinuationSummary).body),
+          readNonEmptyString(parseObject(context.paperclipContinuationSummary).title),
+          readNonEmptyString(context.livenessContinuationInstruction),
+          readNonEmptyString(context.livenessContinuationReason),
+        ].filter((value): value is string => typeof value === "string" && value.length > 0)),
+      });
+      if (!finalInfraGuard.allowed) {
+        logDaasInfrastructureTaskDenial(logger, {
+          result: finalInfraGuard,
+          context: {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            issueId,
+            projectId: issueRef?.projectId ?? null,
+            source: run.invocationSource,
+          },
+        });
+        throw new Error(finalInfraGuard.message ?? "DAAS blocked direct infrastructure task dispatch");
+      }
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const recordWorkspaceFinalize = async (
         status: "succeeded" | "failed",
@@ -9983,6 +10092,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
+    stripDaasMissionProvenanceFromUntrustedContext(contextSnapshot);
     const reason = opts.reason ?? null;
     const payload = opts.payload ?? null;
     const {
@@ -10094,6 +10204,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // project workspace even when context.projectId wasn't set by the caller.
     if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
       enrichedContextSnapshot.projectId = projectId;
+    }
+
+    let ingressInfraTaskTitle: string | null = null;
+    let ingressInfraTaskDescription: string | null = null;
+    if (issueId) {
+      const guardIssue = await db
+        .select({ title: issues.title, description: issues.description })
+        .from(issues)
+        .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+      ingressInfraTaskTitle = guardIssue?.title ?? null;
+      ingressInfraTaskDescription = guardIssue?.description ?? null;
+    }
+    const ingressWakeCommentIds = collectWakeCommentIds(enrichedContextSnapshot);
+    const ingressWakeCommentBodies = ingressWakeCommentIds.length > 0
+      ? await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.companyId, agent.companyId),
+          inArray(issueComments.id, ingressWakeCommentIds),
+          isNull(issueComments.deletedAt),
+        ))
+        .then((rows) => rows.map((row) => row.body))
+      : [];
+    const ingressInfraGuard = guardDaasInfrastructureTaskDispatch({
+      title: ingressInfraTaskTitle,
+      description: ingressInfraTaskDescription,
+      reason,
+      instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
+        contextSnapshot: enrichedContextSnapshot,
+        payload,
+        reason,
+      }).concat(ingressWakeCommentBodies),
+    });
+    if (!ingressInfraGuard.allowed) {
+      logDaasInfrastructureTaskDenial(logger, {
+        result: ingressInfraGuard,
+        context: {
+          companyId: agent.companyId,
+          agentId,
+          issueId,
+          projectId,
+          source,
+        },
+      });
+      await writeSkippedRequest("daas.infrastructure_task.denied", {
+        error: ingressInfraGuard.message ?? "DAAS blocked direct infrastructure task dispatch",
+        payload: { blockedBy: "daas_infrastructure_task_guard" },
+      });
+      if (opts.requestedByActorType === "user") {
+        throw conflict(ingressInfraGuard.message ?? "DAAS blocked direct infrastructure task dispatch");
+      }
+      return null;
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
