@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T258",
+  "title": "Add Paperclip fork policy guard that blocks infra tasks unless routed through `/api/integrations/paperclip/missions`",
+  "author_engine": "claude",
+  "author_pool": "CLAUDE-O48-SEC",
+  "reviewer_engine": "codex",
+  "reviewer_cli_version": "codex-cli 0.138.0",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "f096f91714510fe41f3b46a3d27ec79ef622e568",
+  "reviewed_sha": "c9a8c6ffcd22a7b7c892cd4b7309fd39dc55e119",
+  "diff_sha256": "6003beb401a31529515672a5e1f7dbb55d76f600780eab9047597a745bb1f033",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "3c7d6887bc25cb925c9fd877",
+  "review_log": ".gate/records/T258-c9a8c6ffcd22.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}
