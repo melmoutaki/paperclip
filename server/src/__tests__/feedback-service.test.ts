@@ -1182,4 +1182,36 @@ describe("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.failureReason).toBeNull();
     expect(traces[0]?.exportedAt).toBeNull();
   });
+
+  it("fails closed when feedback sharing is omitted even if a share client is configured", async () => {
+    const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
+    const uploadTraceBundle = vi.fn().mockResolvedValue({ objectKey: "feedback-traces/test.json" });
+    const defaultSvc = feedbackService(db, {
+      shareClient: { uploadTraceBundle },
+    });
+
+    await defaultSvc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    const flushResult = await defaultSvc.flushPendingFeedbackTraces({ companyId });
+
+    expect(flushResult).toMatchObject({ attempted: 0, sent: 0, failed: 0, skipped: "sharing_disabled" });
+    expect(uploadTraceBundle).not.toHaveBeenCalled();
+
+    const traces = await defaultSvc.listFeedbackTraces({
+      companyId,
+      issueId,
+      includePayload: true,
+    });
+    expect(traces[0]?.status).toBe("pending");
+    expect(traces[0]?.attemptCount).toBe(0);
+    expect(traces[0]?.lastAttemptedAt).toBeNull();
+    expect(traces[0]?.exportedAt).toBeNull();
+  });
 });

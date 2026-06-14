@@ -1790,11 +1790,15 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       now?: Date;
     }) => {
       // DAAS fork: feedback-trace sharing is a non-required outbound integration
-      // and is OFF by default. While disabled, the background flusher must do no
-      // work — no row selection, no bundle rebuilds, no share-client calls, and
-      // no attempt mutations. Queued `pending` traces stay pending and are only
-      // attempted once sharing is enabled (see docs/feedback-voting.md).
-      if (options.feedbackSharingEnabled === false) {
+      // and is OFF by default. It must FAIL CLOSED — sharing emits only when a
+      // caller has explicitly opted in with `feedbackSharingEnabled === true`. An
+      // omitted/undefined option is treated as disabled, so a caller that wires a
+      // shareClient but forgets to pass the flag never uploads. While disabled,
+      // the background flusher does no work — no row selection, no bundle
+      // rebuilds, no share-client calls, and no attempt mutations. Queued
+      // `pending` traces stay pending and are only attempted once sharing is
+      // explicitly enabled (see docs/feedback-voting.md).
+      if (options.feedbackSharingEnabled !== true) {
         return { attempted: 0, sent: 0, failed: 0, skipped: "sharing_disabled" as const };
       }
 

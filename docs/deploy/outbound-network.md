@@ -50,7 +50,12 @@ Activation describes *when* a connector can emit:
 | Anthropic model discovery | `api.anthropic.com/v1/models` (or `ANTHROPIC_BASE_URL`) | conditional | `ANTHROPIC_API_KEY` (Claude adapter) |
 | Anthropic usage quota | `api.anthropic.com/api/oauth/usage` | conditional | local Claude OAuth credentials |
 | ChatGPT/Codex usage quota | `chatgpt.com/backend-api/wham/usage` | conditional | local Codex/ChatGPT auth token |
+| Cursor Cloud adapter | Cursor Cloud SDK service endpoints | conditional | `CURSOR_API_KEY` / `cursor_cloud` adapter config |
+| Cursor Cloud environment test | Cursor Cloud SDK service endpoints | conditional | `CURSOR_API_KEY` / adapter environment test config |
 | Cloudflare sandbox bridge | `${bridgeBaseUrl}/api/paperclip-sandbox/v1/*` | conditional | Cloudflare sandbox provider config |
+| E2B sandbox API | `api.e2b.dev`, `*.e2b.dev` | conditional | `E2B_API_KEY` / E2B sandbox provider config |
+| Daytona sandbox API | `app.daytona.io/api` or configured Daytona API URL | conditional | `DAYTONA_API_KEY` / Daytona sandbox provider config |
+| Modal sandbox API | Modal SDK service endpoints | conditional | Modal token/app/environment sandbox provider config |
 | Kubernetes sandbox API | configured Kubernetes API server | conditional | Kubernetes sandbox provider kubeconfig / in-cluster |
 | Paperclip MCP API client | `${PAPERCLIP_API_URL}` | conditional | `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY` |
 | AWS Secrets Manager | `secretsmanager.<region>.amazonaws.com` | conditional | `PAPERCLIP_SECRETS_PROVIDER=aws_secrets_manager` + AWS creds |

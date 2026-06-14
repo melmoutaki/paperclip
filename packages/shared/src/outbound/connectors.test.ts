@@ -44,8 +44,13 @@ const REQUIRED_OUTBOUND_SOURCE_PATHS = [
   // NOT listed here. The exe.dev provider reaches VMs over direct SSH, which the
   // DAAS invariant forbids; it is disabled fork-wide and must not be cataloged as
   // allowed Paperclip egress (see the regression test below).
+  "packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+  "packages/plugins/sandbox-providers/daytona/src/plugin.ts",
+  "packages/plugins/sandbox-providers/modal/src/plugin.ts",
   "packages/plugins/sandbox-providers/kubernetes/src/kube-client.ts",
   "packages/mcp-server/src/client.ts",
+  "packages/adapters/cursor-cloud/src/server/execute.ts",
+  "packages/adapters/cursor-cloud/src/server/test.ts",
   // Previously-catalogued outbound paths.
   "packages/shared/src/telemetry/client.ts",
   "server/src/services/feedback-share-client.ts",

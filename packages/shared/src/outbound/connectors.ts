@@ -278,6 +278,42 @@ export const OUTBOUND_CONNECTORS: readonly OutboundConnectorDescriptor[] = [
   // egress must never be cataloged or blessed as allowed Paperclip outbound. The
   // regression test in connectors.test.ts enforces this.
   {
+    id: "e2b-sandbox",
+    title: "E2B sandbox API",
+    purpose:
+      "Creates, resumes, executes in, and releases E2B sandboxes when the E2B sandbox provider is selected.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://api.e2b.dev", "https://*.e2b.dev"],
+    controls: ["E2B_API_KEY", "(E2B sandbox provider configuration: template + API key)"],
+    enabledByDefault: false,
+    source: "packages/plugins/sandbox-providers/e2b/src/plugin.ts",
+  },
+  {
+    id: "daytona-sandbox",
+    title: "Daytona sandbox API",
+    purpose:
+      "Creates, resumes, executes in, and releases Daytona sandboxes when the Daytona sandbox provider is selected.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://app.daytona.io/api", "(configured Daytona API URL)"],
+    controls: ["DAYTONA_API_KEY", "(Daytona sandbox provider configuration: apiUrl + API key)"],
+    enabledByDefault: false,
+    source: "packages/plugins/sandbox-providers/daytona/src/plugin.ts",
+  },
+  {
+    id: "modal-sandbox",
+    title: "Modal sandbox API",
+    purpose:
+      "Creates, resumes, executes in, and releases Modal sandboxes when the Modal sandbox provider is selected.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://api.modal.com", "(Modal service endpoints used by the Modal SDK)"],
+    controls: ["(Modal sandbox provider configuration: tokenId + tokenSecret + app/environment)"],
+    enabledByDefault: false,
+    source: "packages/plugins/sandbox-providers/modal/src/plugin.ts",
+  },
+  {
     id: "kubernetes-sandbox",
     title: "Kubernetes sandbox API",
     purpose:
@@ -373,6 +409,30 @@ export const OUTBOUND_CONNECTORS: readonly OutboundConnectorDescriptor[] = [
     controls: ["(admin-opened adapter reinstall dialog)"],
     enabledByDefault: true,
     source: "ui/src/pages/AdapterManager.tsx",
+  },
+  {
+    id: "cursor-cloud",
+    title: "Cursor Cloud adapter",
+    purpose:
+      "Creates/resumes Cursor cloud agents, starts cloud runs, streams results, and probes account/model metadata when the Cursor Cloud adapter is configured.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://api.cursor.com", "(Cursor Cloud SDK service endpoints)"],
+    controls: ["CURSOR_API_KEY", "(cursor_cloud adapter configuration)"],
+    enabledByDefault: false,
+    source: "packages/adapters/cursor-cloud/src/server/execute.ts",
+  },
+  {
+    id: "cursor-cloud-environment-test",
+    title: "Cursor Cloud environment test",
+    purpose:
+      "Verifies Cursor Cloud API credentials and optional model availability from the adapter environment test path.",
+    classification: "required",
+    activation: "conditional",
+    destinations: ["https://api.cursor.com", "(Cursor Cloud SDK service endpoints)"],
+    controls: ["CURSOR_API_KEY", "(cursor_cloud adapter environment test configuration)"],
+    enabledByDefault: false,
+    source: "packages/adapters/cursor-cloud/src/server/test.ts",
   },
 ] as const;
 
