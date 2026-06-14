@@ -8,6 +8,7 @@ import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRe
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
+import { buildDaasForkHealthStatus } from "../daas-fork-health.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -43,6 +44,7 @@ export function healthRoutes(
   },
 ) {
   const router = Router();
+  const daasFork = buildDaasForkHealthStatus();
 
   router.post("/dev-server/restart", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
@@ -90,8 +92,8 @@ export function healthRoutes(
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion }
-          : { status: "ok", deploymentMode: opts.deploymentMode },
+          ? { status: "ok", version: serverVersion, daasFork }
+          : { status: "ok", deploymentMode: opts.deploymentMode, daasFork },
       );
       return;
     }
@@ -103,6 +105,7 @@ export function healthRoutes(
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,
+        daasFork,
         error: "database_unreachable"
       });
       return;
@@ -173,6 +176,7 @@ export function healthRoutes(
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      daasFork,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
