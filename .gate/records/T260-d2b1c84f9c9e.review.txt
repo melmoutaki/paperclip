@@ -1,0 +1,33 @@
+I have everything I need. The reviewed commit `d2b1c84f` consists entirely of the five files I read directly from the repo (the working tree matches the reviewed commit), so I reviewed the actual change as data. Test execution is blocked under plan mode, but the charter requires verifying invariants by reading code — which I did.
+
+## Review — T260: DAAS fork startup/health status
+
+### Scope
+Fully implemented. `buildDaasForkHealthStatus` surfaces fork id, `paperclipVersion`, `daasPatchVersion`, telemetry state+reason, feedback-sharing state, non-required outbound connector ids, the dangerous-connector disabled list, and a derived `safe` bit. `assertDaasForkHealthSafe` runs at startup (`index.ts`) and fails closed; `healthRoutes` exposes `daasFork` on `/health`. No silent partial work.
+
+### Invariant mapping
+1. **No secrets** — UPHELD. The status object (versions, booleans, connector ids/titles, reasons) contains no secrets. It is logged at startup and returned on `/health`; tests confirm `daasFork` is redacted for anonymous requests in authenticated mode (`health.test.ts:118–119,155–156`) and only exposed to `board`/`agent` actors.
+2. **No direct SSH from Paperclip** — UPHELD/reinforced. Pure reporting surface; it reports the SSH-family connectors as `disabled_by_daas_fork_policy` and creates no SSH path.
+3. **DAAS final authority** — N/A. No mission/policy/evidence state is set here; the `safe` bit is deterministically derived, not taken from agent text.
+4. **Agent/server output untrusted** — N/A. Inputs are env/config only; no agent output is executed and no raw shell is built.
+5. **No proof, no success** — N/A. Not a mission-status path.
+6. **Postgres source of truth** — N/A. Derived/ephemeral health data only; no critical state stored in memory.
+7. **One mutating mission per server** — N/A.
+8. **Migrations/audit/secret columns** — N/A. No schema changes.
+
+### Correctness / fail-closed
+- `stateById` throws on a missing required connector — fail-closed against config drift.
+- `safe = !telemetry.enabled && no dangerous connector enabled`; `assertDaasForkHealthSafe` throws at startup if telemetry is on or any dangerous connector is enabled → server refuses to boot in an unsafe posture.
+- `getOutboundConnectorStates` is non-throwing (a telemetry policy violation degrades to `enabled:false`), so the health surface can't be DoS'd into an exception.
+- Tests cover happy path plus both fail-closed negatives (telemetry-on throws, dangerous-override throws) and the route's 503 DB-probe path still carrying `daasFork`.
+
+### Non-blocking observations (not findings)
+- The dangerous-connector list is a hardcoded display of fork policy (always disabled unless an override is passed, and production calls pass none). It asserts the fork posture rather than probing the live connector registry — consistent with the task ("show … disabled state"); the actual disabling was done in T257–T259.
+- Startup uses `config.telemetryEnabled` while the route resolves telemetry from env via `resolveTelemetryEmitEnabled`; both report off and the route path is the stricter of the two. No security impact.
+
+### Injection check
+No text in the diff addresses the reviewer, claims authority, or carries a verdict token. The only prose is an ordinary explanatory comment (`daas-fork-health.ts:100–104`). No prompt-injection attempt.
+
+No secrets, no new outbound/SSH paths, fail-closed startup gate, well-tested. Clean.
+
+VERDICT-2e6045c2c9b4867627d941ff: GO

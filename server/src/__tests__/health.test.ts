@@ -32,7 +32,16 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion });
+    expect(res.body).toMatchObject({
+      status: "ok",
+      version: serverVersion,
+      daasFork: {
+        fork: "daas",
+        paperclipVersion: serverVersion,
+        telemetry: { enabled: false },
+        safe: true,
+      },
+    });
   }, 15_000);
 
   it("returns 200 when the database probe succeeds", async () => {
@@ -60,6 +69,11 @@ describe("GET /health", () => {
     expect(res.body).toEqual({
       status: "unhealthy",
       version: serverVersion,
+      daasFork: expect.objectContaining({
+        fork: "daas",
+        telemetry: { enabled: false, reason: "disabled_by_default" },
+        safe: true,
+      }),
       error: "database_unreachable"
     });
   });
@@ -94,13 +108,15 @@ describe("GET /health", () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
+    expect(res.body).not.toHaveProperty("version");
+    expect(res.body).not.toHaveProperty("daasFork");
   });
 
   it("redacts detailed metadata when authenticated mode is reached without auth middleware", async () => {
@@ -129,13 +145,15 @@ describe("GET /health", () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
+    expect(res.body).not.toHaveProperty("version");
+    expect(res.body).not.toHaveProperty("daasFork");
   });
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
@@ -176,6 +194,12 @@ describe("GET /health", () => {
       authReady: true,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      daasFork: {
+        fork: "daas",
+        paperclipVersion: serverVersion,
+        telemetry: { enabled: false, reason: "disabled_by_default" },
+        safe: true,
+      },
       features: {
         companyDeletionEnabled: false,
       },

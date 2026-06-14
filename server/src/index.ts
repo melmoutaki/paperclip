@@ -52,6 +52,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { assertDaasForkHealthSafe, buildDaasForkHealthStatus } from "./daas-fork-health.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -96,6 +97,12 @@ export interface StartedServer {
 
 export async function startServer(): Promise<StartedServer> {
   let config = loadConfig();
+  const daasForkStatus = buildDaasForkHealthStatus({
+    telemetryEnabled: config.telemetryEnabled,
+    feedbackSharingEnabled: config.feedbackSharingEnabled,
+  });
+  assertDaasForkHealthSafe(daasForkStatus);
+  logger.info({ daasFork: daasForkStatus }, "DAAS fork startup health status");
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
