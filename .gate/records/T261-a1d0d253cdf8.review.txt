@@ -1,0 +1,27 @@
+I've verified the change end-to-end against the actual codebase. This is a documentation + Compose-only change (no application/runtime code).
+
+## Invariant mapping
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| #1 No secrets in repo/logs | **Upheld** | No hardcoded secrets. Required secrets use fail-closed `${VAR:?...}`. DB password delivered via Docker secret file; `DATABASE_URL` assembled *inside* the container with no `set -x`, so it isn't echoed. Doc instructs keeping all secrets out of the repo. |
+| #2 No direct SSH from Paperclip | **Upheld** | Compose adds no SSH path; the doc's "Separation Rules" explicitly forbid direct SSH/raw infra and route infra through DAAS. |
+| #3 DAAS final authority | N/A / affirmed | Doc states DAAS remains infra authority; Paperclip calls through the governed mission adapter. |
+| #4 Output untrusted / no raw shell from agent input | **Upheld** | The `command:` override is static (reads secret file → builds URL → exec node). No agent/server input interpolated. The diff itself contained no injection attempting to address me or forge a verdict. |
+| #6 Postgres source of truth | **Upheld** | Dedicated `paperclip` DB on a persisted volume, separate from DAAS DB (doc forbids pointing at shared schema). |
+| #5, #7, #8 | N/A | No evidence/lock/migration logic in this change. |
+
+## Verifications performed
+- `ENTRYPOINT ["docker-entrypoint.sh"]` execs `gosu node "$@"` → the `/bin/sh -lc` command override runs correctly.
+- Command path `node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js` exactly matches the Dockerfile's default CMD.
+- Health probe target `/api/health` exists — `health.ts` mounts `/health` under the `/api` router; confirmed via middleware/openapi references.
+- All env vars set by the compose (`PAPERCLIP_ENTERPRISE_TELEMETRY_POLICY`, `PAPERCLIP_TELEMETRY_DISABLED`, `PAPERCLIP_FEEDBACK_SHARING_ENABLED`, `DAAS_API_SHARED_SECRET`, `DAAS_BASE_URL`, `PAPERCLIP_WEBHOOK_SECRET`, `PAPERCLIP_DAAS_PATCH_VERSION`, `DO_NOT_TRACK`) are genuinely read by the server — defaults are effective, not dead config.
+- Doc's health claims (`telemetry.enabled=false`, dangerous connectors disabled, `safe=true`, `paperclipVersion`, `daasPatchVersion`, redacted anonymous probes) match the T260 implementation in `daas-fork-health.ts`.
+- `docs.json` is valid JSON; the new `deploy/daas-sidecar` page is correctly registered in the Deploy nav.
+
+## Findings
+No blocking findings. Minor (non-blocking) observations: no `start_period` on the sidecar healthcheck (mitigated by 12×10s retries), and the DB password is necessarily present in the host environment to source the Docker secret — both are standard and acceptable.
+
+Full task scope is met (sidecar Compose file + dedicated doc + `docker.md` cross-reference + nav registration), all fail-closed defaults are real and verified, and no invariant is weakened.
+
+VERDICT-00ba24ed94226d06dfc91846: GO

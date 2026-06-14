@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T261",
+  "title": "Configure forked Paperclip local deployment in Compose or a separate sidecar service doc",
+  "author_engine": "codex",
+  "author_pool": "OAI-C55-DEVOPS",
+  "reviewer_engine": "claude",
+  "reviewer_cli_version": "2.1.169 (Claude Code)",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "46782df297e0a5832b975434f12792c8e6276cf1",
+  "reviewed_sha": "a1d0d253cdf878153101b730d7ff17182dd542ef",
+  "diff_sha256": "1151bcf9f1edbaf7414fddb84fdeb5e30a56bdabcf2f00712e4f71e61077ad40",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "00ba24ed94226d06dfc91846",
+  "review_log": ".gate/records/T261-a1d0d253cdf8.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}

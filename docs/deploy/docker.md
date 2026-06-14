@@ -27,6 +27,16 @@ PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
 
 **Note:** `PAPERCLIP_DATA_DIR` is resolved relative to the compose file (`docker/`), so `../data/pc` maps to `data/pc` in the project root.
 
+## DAAS Sidecar Compose
+
+For the DAAS fork, use the sidecar Compose file instead of the standalone quickstart:
+
+```sh
+docker compose -f docker/docker-compose.daas-sidecar.yml up --build
+```
+
+It runs Paperclip on its own `paperclip` PostgreSQL database, sets telemetry and non-required outbound defaults to fail closed, and exposes the fork on `http://localhost:3101`. See [DAAS Sidecar](daas-sidecar.md).
+
 ## Manual Docker Build
 
 ```sh
