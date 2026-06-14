@@ -9,6 +9,22 @@ import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 
+/**
+ * DAAS fork invariant: Paperclip must never open a direct SSH connection to a
+ * remote host. The only sanctioned path to a remote VM/host is
+ * Paperclip -> DAAS API -> DAAS SSH Executor -> host. Every generic first-party
+ * SSH execution / probe / sync entry point in this module therefore fails
+ * closed — it refuses before spawning `ssh` rather than emitting direct SSH
+ * egress. Route remote execution through the DAAS governed path instead of
+ * re-enabling these.
+ */
+export const DAAS_DIRECT_SSH_DISABLED_MESSAGE =
+  "Direct SSH from Paperclip is disabled in the DAAS fork: remote hosts must be reached only through the DAAS API and DAAS SSH Executor, never via a direct SSH connection opened by Paperclip. Route this execution/probe/sync through the DAAS governed path instead of enabling direct SSH egress.";
+
+function assertDaasDirectSshDisabled(): void {
+  throw new Error(DAAS_DIRECT_SSH_DISABLED_MESSAGE);
+}
+
 export interface SshConnectionConfig {
   host: string;
   port: number;
@@ -494,6 +510,8 @@ async function streamLocalFileToSsh(input: {
   localFile: string;
   remoteScript: string;
 }): Promise<void> {
+  // Fail closed: streams a local file over a direct SSH connection.
+  assertDaasDirectSshDisabled();
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
@@ -543,6 +561,8 @@ async function streamSshToLocalFile(input: {
   remoteScript: string;
   localFile: string;
 }): Promise<void> {
+  // Fail closed: streams remote output over a direct SSH connection.
+  assertDaasDirectSshDisabled();
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
@@ -927,6 +947,9 @@ export async function runSshCommand(
     maxBuffer?: number;
   } = {},
 ): Promise<SshCommandResult> {
+  // Fail closed before spawning `ssh`: direct SSH from Paperclip is forbidden
+  // by the DAAS invariant (reach hosts only via the DAAS SSH Executor).
+  assertDaasDirectSshDisabled();
   let cleanup: () => Promise<void> = () => Promise.resolve();
   try {
     const auth = await createSshAuthArgs(config);
@@ -986,6 +1009,9 @@ export async function buildSshSpawnTarget(input: {
   args: string[];
   cleanup: () => Promise<void>;
 }> {
+  // Fail closed: this builds a direct `ssh` spawn target, which the DAAS
+  // invariant forbids. Refuse before constructing the command.
+  assertDaasDirectSshDisabled();
   for (const key of Object.keys(input.env)) {
     if (!isValidShellEnvKey(key)) {
       throw new Error(`Invalid SSH environment variable key: ${key}`);
@@ -1030,6 +1056,8 @@ export async function syncDirectoryToSsh(input: {
   exclude?: string[];
   followSymlinks?: boolean;
 }): Promise<void> {
+  // Fail closed: directory sync to a remote host runs over direct SSH.
+  assertDaasDirectSshDisabled();
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
@@ -1121,6 +1149,8 @@ export async function syncDirectoryFromSsh(input: {
   exclude?: string[];
   preserveLocalEntries?: string[];
 }): Promise<void> {
+  // Fail closed: directory sync from a remote host runs over direct SSH.
+  assertDaasDirectSshDisabled();
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
@@ -1332,6 +1362,8 @@ export async function restoreWorkspaceFromSshExecution(input: {
 export async function ensureSshWorkspaceReady(
   config: SshConnectionConfig,
 ): Promise<{ remoteCwd: string }> {
+  // Fail closed: the SSH workspace probe opens a direct SSH connection.
+  assertDaasDirectSshDisabled();
   const result = await runSshCommand(
     config,
     `mkdir -p ${shellQuote(config.remoteWorkspacePath)} && cd ${shellQuote(config.remoteWorkspacePath)} && pwd`,
@@ -1375,6 +1407,10 @@ export async function startSshEnvLabFixture(input: {
   bindHost?: string;
   host?: string;
 }): Promise<SshEnvLabFixtureState> {
+  // Fail closed: the env-lab fixture exists only to exercise direct SSH from
+  // Paperclip, which the DAAS invariant forbids. Refuse to stand it up so no
+  // direct-SSH transport can be brought to life even in test scaffolding.
+  assertDaasDirectSshDisabled();
   const existing = await readSshEnvLabFixtureState(input.statePath);
   if (existing && await isSshEnvLabFixtureProcess(existing)) {
     return existing;

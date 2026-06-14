@@ -4,6 +4,7 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
+import { DAAS_DIRECT_SSH_DISABLED_MESSAGE } from "@paperclipai/adapter-utils/ssh";
 import { parseObject } from "../adapters/utils.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
@@ -24,6 +25,17 @@ export async function resolveEnvironmentExecutionTarget(input: {
   lease?: EnvironmentLease | null;
   environmentRuntime?: EnvironmentRuntimeService | null;
 }): Promise<AdapterExecutionTarget | null> {
+  // DAAS fork invariant: Paperclip must never reach a remote host over a direct
+  // SSH connection (hosts are reached only through the DAAS API + DAAS SSH
+  // Executor). Resolving an execution target for the `ssh` driver would emit a
+  // `transport: "ssh"` target/spec that opens exactly that direct session, so
+  // fail closed before any SSH target/spec can be built. Legacy `ssh`
+  // environment rows can still be parsed/inspected elsewhere; they just can
+  // never resolve to a runnable SSH execution target here.
+  if (input.environment.driver === "ssh") {
+    throw new Error(DAAS_DIRECT_SSH_DISABLED_MESSAGE);
+  }
+
   if (input.environment.driver === "local") {
     return {
       kind: "local",
@@ -104,52 +116,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
     };
   }
 
-  if (
-    (
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "acpx_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) ||
-    input.environment.driver !== "ssh"
-  ) {
-    return null;
-  }
-
-  const parsed = await resolveEnvironmentDriverConfigForRuntime(input.db, input.companyId, {
-    id: input.environment.id,
-    driver: input.environment.driver as "ssh",
-    config: parseObject(input.environment.config),
-  });
-  if (parsed.driver !== "ssh") {
-    return null;
-  }
-
-  const remoteCwd =
-    typeof input.leaseMetadata?.remoteCwd === "string" && input.leaseMetadata.remoteCwd.trim().length > 0
-      ? input.leaseMetadata.remoteCwd.trim()
-      : parsed.config.remoteWorkspacePath;
-
-  return {
-    kind: "remote",
-    transport: "ssh",
-    environmentId: input.environment.id ?? null,
-    leaseId: input.leaseId ?? null,
-    remoteCwd,
-    spec: {
-      host: parsed.config.host,
-      port: parsed.config.port,
-      username: parsed.config.username,
-      remoteWorkspacePath: parsed.config.remoteWorkspacePath,
-      privateKey: parsed.config.privateKey,
-      knownHosts: parsed.config.knownHosts,
-      strictHostKeyChecking: parsed.config.strictHostKeyChecking,
-      remoteCwd,
-    },
-  };
+  // Only `local` and `sandbox` drivers resolve to runnable execution targets in
+  // the DAAS fork; `ssh` already failed closed above, and any other driver has
+  // no direct execution transport here.
+  return null;
 }
 
 export async function resolveEnvironmentExecutionTransport(

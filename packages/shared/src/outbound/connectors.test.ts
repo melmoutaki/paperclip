@@ -114,6 +114,28 @@ describe("OUTBOUND_CONNECTORS catalog", () => {
     }
   });
 
+  it("never catalogs generic direct-SSH execution as allowed Paperclip egress", () => {
+    // DAAS invariant: Paperclip must never open a direct SSH connection to a
+    // remote host. The generic SSH paths (adapter-utils SSH transport, the
+    // `ssh` environment driver, and the SSH execution-target) all do exactly
+    // that, so none of them — by source, id, or destination — may ever be
+    // blessed as a live, allowed outbound connector.
+    for (const connector of OUTBOUND_CONNECTORS) {
+      expect(
+        connector.source,
+        `generic SSH transport must not be cataloged as Paperclip egress (connector ${connector.id})`,
+      ).not.toContain("adapter-utils/src/ssh");
+      expect(connector.id).not.toBe("ssh-environment");
+      expect(connector.id).not.toBe("ssh-execution-target");
+      for (const destination of connector.destinations) {
+        expect(
+          destination.toLowerCase(),
+          `direct-SSH destination must not be cataloged as Paperclip egress (connector ${connector.id})`,
+        ).not.toMatch(/^ssh:\/\//);
+      }
+    }
+  });
+
   it("never embeds secret values in controls or destinations", () => {
     const secretish = /(secret|token|api[_-]?key|password)\s*[:=]\s*\S/i;
     for (const connector of OUTBOUND_CONNECTORS) {
@@ -136,6 +158,24 @@ describe("getOutboundConnectorStates", () => {
     const telemetry = stateById(states, "telemetry-ingest");
     expect(telemetry.enabled).toBe(true);
     expect(telemetry.reason).toBe("explicitly_enabled");
+  });
+
+  it("honours telemetry kill switches even when telemetry is opted in", () => {
+    // PAPERCLIP_TELEMETRY_ENABLED=1 must not report telemetry as live when a
+    // universal kill switch forces it off; the state is derived through
+    // resolveTelemetryConfig so it tracks the real client behaviour.
+    for (const killSwitch of [
+      { PAPERCLIP_TELEMETRY_DISABLED: "1" },
+      { DO_NOT_TRACK: "1" },
+      { CI: "true" },
+    ]) {
+      const states = getOutboundConnectorStates({
+        env: env({ [TELEMETRY_ENABLE_ENV]: "1", ...killSwitch }),
+      });
+      const telemetry = stateById(states, "telemetry-ingest");
+      expect(telemetry.enabled, `kill switch ${JSON.stringify(killSwitch)}`).toBe(false);
+      expect(telemetry.reason).toBe("disabled_by_default");
+    }
   });
 
   it("reports telemetry policy_enforced_disabled when opted in against the policy", () => {

@@ -133,49 +133,34 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
   });
 
-  it("resolves SSH execution targets in bridge mode", async () => {
-    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
-      driver: "ssh",
-      config: {
-        host: "ssh.example.test",
-        port: 22,
-        username: "paperclip",
-        remoteWorkspacePath: "/srv/paperclip",
-        privateKey: "PRIVATE KEY",
-        knownHosts: "[ssh.example.test]:22 ssh-ed25519 AAAA",
-        strictHostKeyChecking: true,
-      },
-    });
+  it("fails closed for SSH environments instead of resolving a direct SSH target", async () => {
+    // DAAS fork invariant: the `ssh` driver must never resolve to a
+    // `transport: "ssh"` target/spec — Paperclip reaches remote hosts only
+    // through the DAAS API + DAAS SSH Executor, never via a direct SSH
+    // connection. The execution target fails closed before any driver config
+    // is read, so the resolver is never even consulted.
+    await expect(
+      resolveEnvironmentExecutionTarget({
+        db: {} as never,
+        companyId: "company-1",
+        adapterType: "codex_local",
+        environment: {
+          id: "env-ssh-1",
+          driver: "ssh",
+          config: {
+            host: "ssh.example.test",
+            port: 22,
+            username: "paperclip",
+            remoteWorkspacePath: "/srv/paperclip",
+          },
+        },
+        leaseId: "lease-ssh-1",
+        leaseMetadata: {},
+        lease: null,
+        environmentRuntime: null,
+      }),
+    ).rejects.toThrow(/direct SSH/i);
 
-    const target = await resolveEnvironmentExecutionTarget({
-      db: {} as never,
-      companyId: "company-1",
-      adapterType: "codex_local",
-      environment: {
-        id: "env-ssh-1",
-        driver: "ssh",
-        config: {},
-      },
-      leaseId: "lease-ssh-1",
-      leaseMetadata: {},
-      lease: null,
-      environmentRuntime: null,
-    });
-
-    expect(target).toMatchObject({
-      kind: "remote",
-      transport: "ssh",
-      remoteCwd: "/srv/paperclip",
-      leaseId: "lease-ssh-1",
-      environmentId: "env-ssh-1",
-      spec: {
-        host: "ssh.example.test",
-        port: 22,
-        username: "paperclip",
-        remoteWorkspacePath: "/srv/paperclip",
-        remoteCwd: "/srv/paperclip",
-      },
-    });
-    expect(target).not.toHaveProperty("paperclipApiUrl");
+    expect(mockResolveEnvironmentDriverConfigForRuntime).not.toHaveBeenCalled();
   });
 });

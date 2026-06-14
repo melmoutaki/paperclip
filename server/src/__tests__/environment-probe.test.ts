@@ -7,6 +7,8 @@ const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/adapter-utils/ssh", () => ({
   ensureSshWorkspaceReady: mockEnsureSshWorkspaceReady,
+  DAAS_DIRECT_SSH_DISABLED_MESSAGE:
+    "Direct SSH from Paperclip is disabled in the DAAS fork: remote hosts must be reached only through the DAAS API and DAAS SSH Executor, never via a direct SSH connection opened by Paperclip. Route this execution/probe/sync through the DAAS governed path instead of enabling direct SSH egress.",
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
@@ -46,11 +48,10 @@ describe("probeEnvironment", () => {
     expect(mockEnsureSshWorkspaceReady).not.toHaveBeenCalled();
   });
 
-  it("runs an SSH probe and returns the verified remote cwd", async () => {
-    mockEnsureSshWorkspaceReady.mockResolvedValue({
-      remoteCwd: "/srv/paperclip/workspace",
-    });
-
+  it("fails an SSH probe closed without opening a direct SSH connection", async () => {
+    // DAAS fork invariant: an SSH probe would open a direct SSH connection to
+    // the remote host, which is forbidden. The probe must report disabled and
+    // never reach the SSH transport.
     const result = await probeEnvironment({} as any, {
       id: "env-ssh",
       companyId: "company-1",
@@ -73,19 +74,18 @@ describe("probeEnvironment", () => {
       updatedAt: new Date(),
     });
 
-    expect(result).toEqual({
-      ok: true,
-      driver: "ssh",
-      summary: "Connected to ssh-user@ssh.example.test and verified the remote workspace path.",
-      details: {
+    expect(result.ok).toBe(false);
+    expect(result.driver).toBe("ssh");
+    expect(result.summary).toMatch(/disabled in the DAAS fork/i);
+    expect(result.details).toEqual(
+      expect.objectContaining({
         host: "ssh.example.test",
         port: 2222,
         username: "ssh-user",
         remoteWorkspacePath: "/srv/paperclip/workspace",
-        remoteCwd: "/srv/paperclip/workspace",
-      },
-    });
-    expect(mockEnsureSshWorkspaceReady).toHaveBeenCalledTimes(1);
+      }),
+    );
+    expect(mockEnsureSshWorkspaceReady).not.toHaveBeenCalled();
   });
 
   it("reports fake sandbox environments as ready without external calls", async () => {
@@ -205,15 +205,7 @@ describe("probeEnvironment", () => {
     });
   });
 
-  it("captures SSH probe failures without throwing", async () => {
-    mockEnsureSshWorkspaceReady.mockRejectedValue(
-      Object.assign(new Error("Permission denied"), {
-        code: 255,
-        stdout: "",
-        stderr: "Permission denied (publickey).",
-      }),
-    );
-
+  it("reports the DAAS-disabled reason in the SSH probe details", async () => {
     const result = await probeEnvironment({} as any, {
       id: "env-ssh",
       companyId: "company-1",
@@ -237,12 +229,7 @@ describe("probeEnvironment", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.summary).toContain("SSH probe failed");
-    expect(result.details).toEqual(
-      expect.objectContaining({
-        error: "Permission denied (publickey).",
-        code: 255,
-      }),
-    );
+    expect((result.details as { error?: string }).error).toMatch(/disabled in the DAAS fork/i);
+    expect(mockEnsureSshWorkspaceReady).not.toHaveBeenCalled();
   });
 });

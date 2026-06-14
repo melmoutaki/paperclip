@@ -528,7 +528,10 @@ describe("environment routes", () => {
     );
   });
 
-  it("rejects invalid SSH config on create", async () => {
+  it("refuses to create SSH environments on the create route (DAAS direct-SSH disabled)", async () => {
+    // DAAS fork invariant: Paperclip must never open a direct SSH connection, so
+    // the create route fails closed for the `ssh` driver and never reaches the
+    // environment service.
     const app = createApp({
       type: "board",
       userId: "user-1",
@@ -543,101 +546,18 @@ describe("environment routes", () => {
         config: {
           host: "ssh.example.test",
           username: "ssh-user",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
         },
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toContain("remote workspace path");
+    expect(res.body.error).toMatch(/disabled in the DAAS fork/i);
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
-  it("normalizes SSH private keys into secret refs before persistence", async () => {
-    const environment = {
-      ...createEnvironment(),
-      id: "env-ssh",
-      name: "SSH Fixture",
-      driver: "ssh" as const,
-      config: {
-        host: "ssh.example.test",
-        port: 22,
-        username: "ssh-user",
-        remoteWorkspacePath: "/srv/paperclip/workspace",
-        privateKey: null,
-        privateKeySecretRef: {
-          type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
-          version: "latest",
-        },
-        knownHosts: null,
-        strictHostKeyChecking: true,
-      },
-    };
-    mockEnvironmentService.create.mockResolvedValue(environment);
-    const pluginWorkerManager = {};
-    const app = createApp({
-      type: "board",
-      userId: "user-1",
-      source: "local_implicit",
-    }, { pluginWorkerManager });
-
-    const res = await request(app)
-      .post("/api/companies/company-1/environments")
-      .send({
-        name: "SSH Fixture",
-        driver: "ssh",
-        config: {
-          host: "ssh.example.test",
-          username: "ssh-user",
-          remoteWorkspacePath: "/srv/paperclip/workspace",
-          privateKey: "  super-secret-key  ",
-        },
-      });
-
-    expect(res.status).toBe(201);
-    expect(mockEnvironmentService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
-      config: expect.objectContaining({
-        privateKey: null,
-        privateKeySecretRef: {
-          type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
-          version: "latest",
-        },
-      }),
-    }));
-    expect(JSON.stringify(mockEnvironmentService.create.mock.calls[0][1])).not.toContain("super-secret-key");
-    expect(mockSecretService.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        provider: "local_encrypted",
-        value: "super-secret-key",
-      }),
-      expect.any(Object),
-    );
-  });
-
-  it("uses the configured provider for SSH private key secret materialization", async () => {
-    process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
-    const environment = {
-      ...createEnvironment(),
-      id: "env-ssh",
-      name: "SSH Fixture",
-      driver: "ssh" as const,
-      config: {
-        host: "ssh.example.test",
-        port: 22,
-        username: "ssh-user",
-        remoteWorkspacePath: "/srv/paperclip/workspace",
-        privateKey: null,
-        privateKeySecretRef: {
-          type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
-          version: "latest",
-        },
-        knownHosts: null,
-        strictHostKeyChecking: true,
-      },
-    };
-    mockEnvironmentService.create.mockResolvedValue(environment);
+  it("never materializes an SSH private key secret when SSH creation is refused", async () => {
+    // The SSH driver is disabled before persistence, so a supplied raw private
+    // key must never be turned into a stored secret.
     const app = createApp({
       type: "board",
       userId: "user-1",
@@ -657,15 +577,10 @@ describe("environment routes", () => {
         },
       });
 
-    expect(res.status).toBe(201);
-    expect(mockSecretService.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        provider: "aws_secrets_manager",
-        value: "super-secret-key",
-      }),
-      expect.any(Object),
-    );
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/disabled in the DAAS fork/i);
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
   it("rejects persisted fake sandbox environments", async () => {
@@ -1174,7 +1089,7 @@ describe("environment routes", () => {
     expect(JSON.stringify(mockEnvironmentService.update.mock.calls[0][1])).not.toContain("known-host");
   });
 
-  it("requires explicit SSH config when switching from local to SSH", async () => {
+  it("refuses to switch an environment to the disabled SSH driver", async () => {
     mockEnvironmentService.getById.mockResolvedValue(createEnvironment());
     const app = createApp({
       type: "board",
@@ -1189,7 +1104,7 @@ describe("environment routes", () => {
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toContain("host");
+    expect(res.body.error).toMatch(/disabled in the DAAS fork/i);
     expect(mockEnvironmentService.update).not.toHaveBeenCalled();
   });
 

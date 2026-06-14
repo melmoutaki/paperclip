@@ -350,7 +350,10 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(found?.id).toBe(managed.id);
   });
 
-  it("allows multiple SSH environments for the same company", async () => {
+  it("refuses to create SSH environments (DAAS direct-SSH disabled)", async () => {
+    // DAAS fork invariant: Paperclip must never open a direct SSH connection, so
+    // creating an `ssh` environment fails closed at the persistence boundary and
+    // never lands a row.
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -360,20 +363,15 @@ describeEmbeddedPostgres("environmentService leases", () => {
       updatedAt: new Date(),
     });
 
-    const first = await svc.create(companyId, {
-      name: "Production SSH",
-      driver: "ssh",
-      config: { host: "prod.example.com", username: "deploy" },
-    });
-    const second = await svc.create(companyId, {
-      name: "Staging SSH",
-      driver: "ssh",
-      config: { host: "staging.example.com", username: "deploy" },
-    });
-
-    expect(first.id).not.toBe(second.id);
+    await expect(
+      svc.create(companyId, {
+        name: "Production SSH",
+        driver: "ssh",
+        config: { host: "prod.example.com", username: "deploy" },
+      }),
+    ).rejects.toThrow(/disabled in the DAAS fork/i);
 
     const rows = await db.select().from(environments).where(eq(environments.companyId, companyId));
-    expect(rows.filter((row) => row.driver === "ssh")).toHaveLength(2);
+    expect(rows.filter((row) => row.driver === "ssh")).toHaveLength(0);
   });
 });

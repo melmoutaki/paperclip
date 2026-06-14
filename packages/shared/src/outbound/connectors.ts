@@ -1,7 +1,9 @@
 import {
   TELEMETRY_ENABLE_ENV,
+  TelemetryPolicyViolationError,
   isTelemetryRequested,
   resolveEnterpriseTelemetryPolicy,
+  resolveTelemetryConfig,
 } from "../telemetry/config.js";
 
 /**
@@ -267,6 +269,14 @@ export const OUTBOUND_CONNECTORS: readonly OutboundConnectorDescriptor[] = [
   // and DAAS SSH Executor). The provider is disabled fork-wide and fails closed
   // (see packages/plugins/sandbox-providers/exe-dev/src/plugin.ts), so its direct
   // SSH egress must never be cataloged or blessed as allowed Paperclip outbound.
+  //
+  // NOTE: there is likewise intentionally no generic SSH environment / adapter
+  // connector here (packages/adapter-utils/src/ssh.ts, the `ssh` environment
+  // driver, and the SSH execution-target transport). They open direct SSH from
+  // Paperclip to a remote host, which the same DAAS invariant forbids. All of
+  // those paths are disabled fork-wide and fail closed, so generic direct-SSH
+  // egress must never be cataloged or blessed as allowed Paperclip outbound. The
+  // regression test in connectors.test.ts enforces this.
   {
     id: "kubernetes-sandbox",
     title: "Kubernetes sandbox API",
@@ -397,6 +407,24 @@ function isDaasMissionHandoffConfigured(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
+ * Resolve whether telemetry would actually emit for this env, honouring the
+ * same kill switches as the live client (`PAPERCLIP_TELEMETRY_DISABLED`,
+ * `DO_NOT_TRACK`, CI) and the enterprise policy. Routed through
+ * {@link resolveTelemetryConfig} so the connector view can never report
+ * telemetry "enabled" while a kill switch forces it off. Non-throwing: a
+ * policy violation (telemetry requested against an enforcing policy) is a
+ * disabled state here, not an exception, so the health surface stays safe.
+ */
+function resolveTelemetryEmitEnabled(env: NodeJS.ProcessEnv): boolean {
+  try {
+    return resolveTelemetryConfig(undefined, env).enabled;
+  } catch (error) {
+    if (error instanceof TelemetryPolicyViolationError) return false;
+    throw error;
+  }
+}
+
+/**
  * Compute the live enablement state of every outbound connector. Pure and
  * non-throwing so it is safe to call from a health endpoint: a telemetry policy
  * violation surfaces as `enabled: false, reason: "policy_enforced_disabled"`
@@ -408,9 +436,11 @@ export function getOutboundConnectorStates(
   const env = inputs.env ?? process.env;
   const policy = resolveEnterpriseTelemetryPolicy(env);
   const telemetryRequested = isTelemetryRequested(undefined, env);
-  const telemetryEnabled =
-    inputs.telemetryEnabled ??
-    (telemetryRequested && policy !== "enforce_disabled");
+  // Honour the universal kill switches (PAPERCLIP_TELEMETRY_DISABLED,
+  // DO_NOT_TRACK, CI) and the enterprise policy via resolveTelemetryConfig so a
+  // bare PAPERCLIP_TELEMETRY_ENABLED=1 never reports "enabled" when something
+  // else forces telemetry off. A caller-supplied value still wins.
+  const telemetryEnabled = inputs.telemetryEnabled ?? resolveTelemetryEmitEnabled(env);
   const feedbackSharingEnabled = inputs.feedbackSharingEnabled ?? isFeedbackSharingEnabled(env);
 
   return OUTBOUND_CONNECTORS.map((connector): OutboundConnectorState => {

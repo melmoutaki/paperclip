@@ -1,16 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import {
-  buildSshEnvLabFixtureConfig,
-  getSshEnvLabSupport,
-  startSshEnvLabFixture,
-  stopSshEnvLabFixture,
-  type SshEnvironmentConfig,
-} from "@paperclipai/adapter-utils/ssh";
+import { stopSshEnvLabFixture } from "@paperclipai/adapter-utils/ssh";
 import {
   agents,
   companies,
@@ -31,7 +24,6 @@ import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-const sshFixtureSupport = await getSshEnvLabSupport();
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -259,31 +251,39 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
     });
   }
 
-  it("SSH satisfies the acquire/release host contract", async () => {
-    if (!sshFixtureSupport.supported) {
-      console.warn(`Skipping SSH driver contract test: ${sshFixtureSupport.reason ?? "unsupported environment"}`);
-      return;
-    }
-
-    const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-env-runtime-contract-ssh-"));
-    fixtureRoots.push(fixtureRoot);
-    const fixture = await startSshEnvLabFixture({ statePath: path.join(fixtureRoot, "state.json") });
-    const sshConfig = await buildSshEnvLabFixtureConfig(fixture);
-
-    await runContract({
-      name: "ssh",
+  it("fails the SSH driver closed instead of opening a direct SSH connection", async () => {
+    // DAAS fork invariant: the SSH driver must never establish a direct SSH
+    // session from Paperclip. Acquiring a lease fails closed and persists no
+    // lease, so there is no acquire/release host contract for SSH to satisfy.
+    const runtime = environmentRuntimeService(db);
+    const { companyId, environment, issueId, runId } = await seedEnvironment({
       driver: "ssh",
-      config: sshConfig as SshEnvironmentConfig as unknown as Record<string, unknown>,
-      expectLease: (lease) => {
-        expect(lease.providerLeaseId).toContain(`ssh://${sshConfig.username}@${sshConfig.host}:${sshConfig.port}`);
-        expect(lease.metadata).toMatchObject({
-          host: sshConfig.host,
-          port: sshConfig.port,
-          username: sshConfig.username,
-          remoteWorkspacePath: sshConfig.remoteWorkspacePath,
-          remoteCwd: sshConfig.remoteWorkspacePath,
-        });
+      config: {
+        host: "ssh.example.test",
+        port: 2222,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        privateKeySecretRef: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
       },
     });
+
+    await expect(
+      runtime.acquireRunLease({
+        companyId,
+        environment,
+        issueId,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/disabled in the DAAS fork/i);
+
+    const activeRows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.status, "active"));
+    expect(activeRows).toHaveLength(0);
   });
 });
