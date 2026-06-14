@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { DAAS_PAPERCLIP_MISSIONS_ROUTE } from "@paperclipai/shared";
 import {
   agents,
   agentWakeupRequests,
@@ -161,6 +162,113 @@ describe("heartbeat comment wake batching", () => {
     await tempDb?.cleanup();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.DAAS_BASE_URL;
+    delete process.env.DAAS_API_SHARED_SECRET;
+    delete process.env.PAPERCLIP_WEBHOOK_SECRET;
+    delete process.env.DAAS_DEFAULT_TARGET_SERVER_ID;
+  });
+
+  it("routes infrastructure issue wakeups to DAAS at ingress without queueing an internal run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    process.env.DAAS_BASE_URL = "https://daas.example.test";
+    process.env.DAAS_API_SHARED_SECRET = "outbound-daas-secret";
+    process.env.PAPERCLIP_WEBHOOK_SECRET = "webhook-secret";
+    process.env.DAAS_DEFAULT_TARGET_SERVER_ID = "srv_prod_1";
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, data: { daas_mission_id: "mis_daas_ingress", status: "requested" } }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "DAAS",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Infrastructure Agent",
+      role: "operator",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Restart nginx on production server",
+      description: "Restart nginx on production server after deploy",
+      status: "open",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const result = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        targetServerId: "srv_prod_1",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "issue-router",
+    });
+
+    expect(result).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      companyId,
+      agentId,
+      issueId,
+      prompt: "Restart nginx on production server after deploy",
+      target: { type: "server", id: "srv_prod_1" },
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+    const [wake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(wake).toMatchObject({
+      status: "skipped",
+      reason: "daas.mission_route.accepted",
+    });
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const executionState = issue?.executionState as Record<string, unknown>;
+    expect(executionState.daasMission).toMatchObject({
+      missionId: "mis_daas_ingress",
+      status: "requested",
+      ok: true,
+      executionAuthority: "daas",
+    });
+    expect(executionState.daasMissionRouted).toMatchObject({
+      daasMissionId: "mis_daas_ingress",
+      route: DAAS_PAPERCLIP_MISSIONS_ROUTE,
+    });
+  });
+
   it("defers approval-approved wakes for a running issue so the assignee resumes after the run", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -296,7 +404,7 @@ describe("heartbeat comment wake batching", () => {
         adapterConfig: {
           url: gateway.url,
           headers: {
-            "x-openclaw-token": "gateway-token",
+            "x-openclaw-fixture": "gateway-fixture",
           },
           payloadTemplate: {
             message: "wake now",
@@ -495,7 +603,7 @@ describe("heartbeat comment wake batching", () => {
         adapterConfig: {
           url: gateway.url,
           headers: {
-            "x-openclaw-token": "gateway-token",
+            "x-openclaw-fixture": "gateway-fixture",
           },
           payloadTemplate: {
             message: "wake now",
@@ -657,7 +765,7 @@ describe("heartbeat comment wake batching", () => {
         adapterConfig: {
           url: gateway.url,
           headers: {
-            "x-openclaw-token": "gateway-token",
+            "x-openclaw-fixture": "gateway-fixture",
           },
           payloadTemplate: {
             message: "wake now",
@@ -851,7 +959,7 @@ describe("heartbeat comment wake batching", () => {
           adapterConfig: {
             url: gateway.url,
             headers: {
-              "x-openclaw-token": "gateway-token",
+              "x-openclaw-fixture": "gateway-fixture",
             },
             payloadTemplate: {
               message: "wake now",
@@ -871,7 +979,7 @@ describe("heartbeat comment wake batching", () => {
           adapterConfig: {
             url: gateway.url,
             headers: {
-              "x-openclaw-token": "gateway-token",
+              "x-openclaw-fixture": "gateway-fixture",
             },
             payloadTemplate: {
               message: "wake now",
@@ -1049,7 +1157,7 @@ describe("heartbeat comment wake batching", () => {
         adapterConfig: {
           url: gateway.url,
           headers: {
-            "x-openclaw-token": "gateway-token",
+            "x-openclaw-fixture": "gateway-fixture",
           },
           payloadTemplate: {
             message: "wake now",
@@ -1203,7 +1311,7 @@ describe("heartbeat comment wake batching", () => {
           adapterConfig: {
             url: gateway.url,
             headers: {
-              "x-openclaw-token": "gateway-token",
+              "x-openclaw-fixture": "gateway-fixture",
             },
             payloadTemplate: {
               message: "wake now",
@@ -1223,7 +1331,7 @@ describe("heartbeat comment wake batching", () => {
           adapterConfig: {
             url: gateway.url,
             headers: {
-              "x-openclaw-token": "gateway-token",
+              "x-openclaw-fixture": "gateway-fixture",
             },
             payloadTemplate: {
               message: "wake now",
@@ -1404,7 +1512,7 @@ describe("heartbeat comment wake batching", () => {
           adapterConfig: {
             url: gateway.url,
             headers: {
-              "x-openclaw-token": "gateway-token",
+              "x-openclaw-fixture": "gateway-fixture",
             },
             payloadTemplate: {
               message: "wake now",
@@ -1424,7 +1532,7 @@ describe("heartbeat comment wake batching", () => {
           adapterConfig: {
             url: gateway.url,
             headers: {
-              "x-openclaw-token": "gateway-token",
+              "x-openclaw-fixture": "gateway-fixture",
             },
             payloadTemplate: {
               message: "wake now",
@@ -1550,7 +1658,7 @@ describe("heartbeat comment wake batching", () => {
         adapterConfig: {
           url: gateway.url,
           headers: {
-            "x-openclaw-token": "gateway-token",
+            "x-openclaw-fixture": "gateway-fixture",
           },
           payloadTemplate: {
             message: "wake now",

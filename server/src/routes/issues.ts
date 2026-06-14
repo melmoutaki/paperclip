@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issuePlanDecompositions,
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
@@ -105,6 +106,14 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { detectDaasInfrastructureTaskIntent } from "../services/daas-infrastructure-task-guard.js";
+import { collectDaasInfrastructureIntentTexts } from "../services/daas-infrastructure-intent-texts.js";
+import {
+  buildDaasMissionExecutionState,
+  buildPendingDaasMissionExecutionState,
+  persistPendingDaasMissionRouteOnIssue,
+  readDaasInfrastructureIntentState,
+  routeInfrastructureTicketThroughDaasAdapter,
+} from "../services/daas-mission-adapter.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -733,16 +742,29 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
 
 function rejectDaasInfrastructureIssueInput(
   res: Response,
+  routeable: { assigneeAgentId?: string | null; status?: string | null } | null,
   ...texts: Array<string | null | undefined>
 ): boolean {
   const result = detectDaasInfrastructureTaskIntent(...texts);
   if (!result.isInfrastructureIntent) return false;
+  if (routeable?.status !== "done" && routeable?.status !== "cancelled") {
+    return false;
+  }
   res.status(422).json({
     error: "daas_mission_route_required",
     route: "/api/integrations/paperclip/missions",
     signals: result.signals,
   });
   return true;
+}
+
+const DAAS_ROUTED_TEXT_OMITTED = "[DAAS mission routed text omitted]";
+
+function daasInfrastructureSafeActivityText(
+  isInfrastructureIntent: boolean,
+  value: string | null | undefined,
+) {
+  return isInfrastructureIntent ? DAAS_ROUTED_TEXT_OMITTED : value;
 }
 
 function readAcceptanceCriteriaTexts(value: unknown): string[] {
@@ -2139,11 +2161,11 @@ export function issueRoutes(
     return false;
   }
 
-  async function resolveActiveIssueRun(issue: {
-    id: string;
-    assigneeAgentId: string | null;
-    executionRunId?: string | null;
-  }) {
+	  async function resolveActiveIssueRun(issue: {
+	    id: string;
+	    assigneeAgentId: string | null;
+	    executionRunId?: string | null;
+	  }) {
     let runToInterrupt = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
 
     if ((!runToInterrupt || runToInterrupt.status !== "running") && issue.assigneeAgentId) {
@@ -2160,10 +2182,30 @@ export function issueRoutes(
       }
     }
 
-    return runToInterrupt?.status === "running" ? runToInterrupt : null;
-  }
+	    return runToInterrupt?.status === "running" ? runToInterrupt : null;
+	  }
 
-  function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
+	  async function cancelInternalRunsForDaasInfrastructureRoute(issue: { id: string; companyId: string }) {
+	    const runRows = await db
+	      .select({ id: heartbeatRuns.id })
+	      .from(heartbeatRuns)
+	      .where(and(
+	        eq(heartbeatRuns.companyId, issue.companyId),
+	        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+	        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+	      ));
+	    const cancelledRunIds: string[] = [];
+	    for (const run of runRows) {
+	      const cancelled = await heartbeat.cancelRun(
+	        run.id,
+	        "Cancelled because infrastructure work was routed to the DAAS mission adapter",
+	      );
+	      if (cancelled) cancelledRunIds.push(cancelled.id);
+	    }
+	    return cancelledRunIds;
+	  }
+
+	  function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
     return {
       errorCode: "operator_interrupted",
       resultJson: {
@@ -3320,7 +3362,7 @@ export function issueRoutes(
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
       return;
     }
-    if (rejectDaasInfrastructureIssueInput(res, req.body.title, req.body.body, req.body.changeSummary)) return;
+    if (rejectDaasInfrastructureIssueInput(res, null, req.body.title, req.body.body, req.body.changeSummary)) return;
 
     const actor = getActorInfo(req);
     const sourceTrust = await sourceTrustForActorWrite(issue, actor);
@@ -4240,8 +4282,14 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    const createInfrastructureIntent = detectDaasInfrastructureTaskIntent(
+      req.body.title,
+      req.body.description,
+      ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
+    );
     if (rejectDaasInfrastructureIssueInput(
       res,
+      { assigneeAgentId: req.body.assigneeAgentId, status: req.body.status },
       req.body.title,
       req.body.description,
       ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
@@ -4307,14 +4355,72 @@ export function issueRoutes(
       projectId: createBody.projectId ?? null,
       executionPolicy,
     }, actor);
-    const issue = await svc.create(companyId, {
+    const createInput = {
       ...createBody,
       id: issueId,
       executionPolicy,
+      daasInfrastructureRoutingVerified: createInfrastructureIntent.isInfrastructureIntent,
+      ...(createInfrastructureIntent.isInfrastructureIntent
+        ? {
+            executionState: buildPendingDaasMissionExecutionState(null, {
+              companyId,
+              agentId: createBody.assigneeAgentId ?? actor.agentId ?? "daas",
+              issueId,
+              title: createBody.title ?? null,
+              description: createBody.description ?? null,
+              promptTexts: [
+                createBody.description ?? null,
+                createBody.title ?? null,
+                ...readAcceptanceCriteriaTexts(createBody.acceptanceCriteria),
+              ],
+              instructionTexts: readAcceptanceCriteriaTexts(createBody.acceptanceCriteria),
+              contextSnapshot: {
+                ...(createBody as Record<string, unknown>),
+                issueId,
+                source: "issue.create",
+              },
+              signals: createInfrastructureIntent.signals,
+            }),
+          }
+        : {}),
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    };
+    const createRouteInput = {
+      companyId,
+      agentId: createBody.assigneeAgentId ?? actor.agentId ?? "daas",
+      issueId,
+      title: createBody.title ?? null,
+      description: createBody.description ?? null,
+      promptTexts: [
+        createBody.description ?? null,
+        createBody.title ?? null,
+        ...readAcceptanceCriteriaTexts(createBody.acceptanceCriteria),
+      ],
+      instructionTexts: readAcceptanceCriteriaTexts(createBody.acceptanceCriteria),
+      contextSnapshot: {
+        ...(createBody as Record<string, unknown>),
+        issueId,
+        source: "issue.create",
+      },
+      signals: createInfrastructureIntent.signals,
+    };
+    const createdIssue = createInfrastructureIntent.isInfrastructureIntent
+      ? await db.transaction(async (tx) => {
+          const txSvc = issueService(tx as unknown as Db);
+          const created = await txSvc.create(companyId, createInput);
+          await persistPendingDaasMissionRouteOnIssue(tx as unknown as Db, createRouteInput);
+          return created;
+        })
+      : await svc.create(companyId, createInput);
+    const createResult = createInfrastructureIntent.isInfrastructureIntent
+      ? {
+          issue: createdIssue,
+          routed: await routeInfrastructureTicketThroughDaasAdapter(db, createRouteInput),
+        }
+      : { issue: createdIssue, routed: null };
+    const issue = createResult.routed ? (await svc.getById(createdIssue.id)) ?? createResult.issue : createResult.issue;
     await issueReferencesSvc.syncIssue(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -4332,8 +4438,9 @@ export function issueRoutes(
       entityType: "issue",
       entityId: issue.id,
       details: {
-        title: issue.title,
+        title: daasInfrastructureSafeActivityText(createInfrastructureIntent.isInfrastructureIntent, issue.title),
         identifier: issue.identifier,
+        ...(createInfrastructureIntent.isInfrastructureIntent ? { daasMissionRoutedTextOmitted: true } : {}),
         ...buildCreateIssueActivityStatusDetails(issue, res),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...summarizeIssueReferenceActivityDetails({
@@ -4367,15 +4474,28 @@ export function issueRoutes(
       });
     }
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (!createInfrastructureIntent.isInfrastructureIntent) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        rethrowOnError: false,
+      });
+    }
+
+    if (createResult.routed && !createResult.routed.dispatch.ok) {
+      res.status(409).json({
+        ...issue,
+        daasMission: createResult.routed.mission,
+        error: "daas_mission_route_not_accepted",
+        cancellationReason: createResult.routed.cancellationReason,
+      });
+      return;
+    }
 
     res.status(201).json({
       ...issue,
@@ -4395,8 +4515,14 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    const childInfrastructureIntent = detectDaasInfrastructureTaskIntent(
+      req.body.title,
+      req.body.description,
+      ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
+    );
     if (rejectDaasInfrastructureIssueInput(
       res,
+      { assigneeAgentId: req.body.assigneeAgentId, status: req.body.status },
       req.body.title,
       req.body.description,
       ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
@@ -4433,16 +4559,79 @@ export function issueRoutes(
       projectId: createBody.projectId ?? parent.projectId ?? null,
       executionPolicy,
     }, actor);
-    const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
+    const createChildInput = {
       ...createBody,
       id: issueId,
       executionPolicy,
+      daasInfrastructureRoutingVerified: childInfrastructureIntent.isInfrastructureIntent,
+      ...(childInfrastructureIntent.isInfrastructureIntent
+        ? {
+            executionState: buildPendingDaasMissionExecutionState(null, {
+              companyId: parent.companyId,
+              agentId: createBody.assigneeAgentId ?? actor.agentId ?? "daas",
+              issueId,
+              title: createBody.title ?? null,
+              description: createBody.description ?? null,
+              promptTexts: [
+                createBody.description ?? null,
+                createBody.title ?? null,
+                ...readAcceptanceCriteriaTexts(createBody.acceptanceCriteria),
+              ],
+              instructionTexts: readAcceptanceCriteriaTexts(createBody.acceptanceCriteria),
+              contextSnapshot: {
+                ...(createBody as Record<string, unknown>),
+                issueId,
+                parentId: parent.id,
+                source: "issue.child_create",
+              },
+              signals: childInfrastructureIntent.signals,
+            }),
+          }
+        : {}),
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    };
+    const childRouteInput = {
+      companyId: parent.companyId,
+      agentId: createBody.assigneeAgentId ?? actor.agentId ?? "daas",
+      issueId,
+      title: createBody.title ?? null,
+      description: createBody.description ?? null,
+      promptTexts: [
+        createBody.description ?? null,
+        createBody.title ?? null,
+        ...readAcceptanceCriteriaTexts(createBody.acceptanceCriteria),
+      ],
+      instructionTexts: readAcceptanceCriteriaTexts(createBody.acceptanceCriteria),
+      contextSnapshot: {
+        ...(createBody as Record<string, unknown>),
+        issueId,
+        parentId: parent.id,
+        source: "issue.child_create",
+      },
+      signals: childInfrastructureIntent.signals,
+    };
+    const createdChild = childInfrastructureIntent.isInfrastructureIntent
+      ? await db.transaction(async (tx) => {
+          const txSvc = issueService(tx as unknown as Db);
+          const created = await txSvc.createChild(parent.id, createChildInput);
+          await persistPendingDaasMissionRouteOnIssue(tx as unknown as Db, childRouteInput);
+          return created;
+        })
+      : await svc.createChild(parent.id, createChildInput);
+    const childCreateResult = childInfrastructureIntent.isInfrastructureIntent
+      ? {
+          created: createdChild,
+          routed: await routeInfrastructureTicketThroughDaasAdapter(db, childRouteInput),
+        }
+      : { created: createdChild, routed: null };
+    const parentBlockerAdded = childCreateResult.created.parentBlockerAdded;
+    const issue = childCreateResult.routed
+      ? (await svc.getById(createdChild.issue.id)) ?? childCreateResult.created.issue
+      : childCreateResult.created.issue;
 
     await logActivity(db, {
       companyId: parent.companyId,
@@ -4456,7 +4645,8 @@ export function issueRoutes(
       details: {
         parentId: parent.id,
         identifier: issue.identifier,
-        title: issue.title,
+        title: daasInfrastructureSafeActivityText(childInfrastructureIntent.isInfrastructureIntent, issue.title),
+        ...(childInfrastructureIntent.isInfrastructureIntent ? { daasMissionRoutedTextOmitted: true } : {}),
         ...buildCreateIssueActivityStatusDetails(issue, res),
         inheritedExecutionWorkspaceFromIssueId: parent.id,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
@@ -4488,15 +4678,28 @@ export function issueRoutes(
       });
     }
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.child_create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    if (!childInfrastructureIntent.isInfrastructureIntent) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.child_create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        rethrowOnError: false,
+      });
+    }
+
+    if (childCreateResult.routed && !childCreateResult.routed.dispatch.ok) {
+      res.status(409).json({
+        ...issue,
+        daasMission: childCreateResult.routed.mission,
+        error: "daas_mission_route_not_accepted",
+        cancellationReason: childCreateResult.routed.cancellationReason,
+      });
+      return;
+    }
 
     res.status(201).json(issue);
   });
@@ -4549,6 +4752,12 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const normalizedChildren = [];
+    const acceptedPlanDaasRoutes = new Map<string, {
+      isInfrastructureIntent: boolean;
+      signals: string[];
+      instructionTexts: string[];
+      routeInput: Parameters<typeof buildPendingDaasMissionExecutionState>[1] | null;
+    }>();
     for (const child of requestedChildren) {
       const executionPolicy = applyActorMonitorScheduledBy(
         normalizeIssueExecutionPolicy(child.executionPolicy),
@@ -4562,10 +4771,57 @@ export function issueRoutes(
         projectId: child.projectId ?? sourceIssue.projectId ?? null,
         executionPolicy,
       }, actor);
+      const childIntentTexts = collectDaasInfrastructureIntentTexts({
+        sourceIssueTitle: sourceIssue.title,
+        sourceIssueDescription: sourceIssue.description,
+        acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+        acceptedPlanRequest: req.body,
+        child,
+      });
+      const childInfrastructureIntent = detectDaasInfrastructureTaskIntent(
+        child.title,
+        child.description,
+        ...(child.acceptanceCriteria ?? []),
+        ...childIntentTexts,
+      );
+	      const routeInput = childInfrastructureIntent.isInfrastructureIntent
+	        ? {
+	            companyId: sourceIssue.companyId,
+	            agentId: child.assigneeAgentId ?? actor.agentId ?? "daas",
+	            issueId: childIssueId,
+	            title: child.title ?? null,
+	            description: child.description ?? null,
+	            promptTexts: [
+	              child.description ?? null,
+	              child.title ?? null,
+	              ...(child.acceptanceCriteria ?? []),
+	              ...childIntentTexts,
+	            ],
+	            instructionTexts: childIntentTexts,
+	            contextSnapshot: {
+              ...(child as Record<string, unknown>),
+              issueId: childIssueId,
+              parentId: sourceIssue.id,
+              acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+              source: "issue.accepted_plan_decomposition",
+            },
+            signals: childInfrastructureIntent.signals,
+          }
+        : null;
+      acceptedPlanDaasRoutes.set(childIssueId, {
+        isInfrastructureIntent: childInfrastructureIntent.isInfrastructureIntent,
+        signals: childInfrastructureIntent.signals,
+        instructionTexts: childIntentTexts,
+        routeInput,
+      });
       normalizedChildren.push({
         ...child,
         id: childIssueId,
         executionPolicy,
+        daasInfrastructureRoutingVerified: childInfrastructureIntent.isInfrastructureIntent,
+        ...(routeInput
+          ? { executionState: buildPendingDaasMissionExecutionState(null, routeInput) }
+          : {}),
         ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -4602,7 +4858,98 @@ export function issueRoutes(
       },
     });
 
+    let decompositionRouteFailure: {
+      issue: typeof result.newlyCreatedIssues[number];
+      routed: Awaited<ReturnType<typeof routeInfrastructureTicketThroughDaasAdapter>>;
+    } | null = null;
     for (const issue of result.newlyCreatedIssues) {
+      const childRoute = acceptedPlanDaasRoutes.get(issue.id);
+      const routed = childRoute?.routeInput
+        ? await routeInfrastructureTicketThroughDaasAdapter(db, childRoute.routeInput)
+        : null;
+      if (routed && !routed.dispatch.ok && !decompositionRouteFailure) {
+        decompositionRouteFailure = { issue, routed };
+      }
+    }
+
+    if (decompositionRouteFailure) {
+      const failedRouteStatus = decompositionRouteFailure.routed.mission.status === "blocked_by_policy"
+        ? "blocked_by_policy"
+        : "daas_route_failed";
+      await db.transaction(async (tx) => {
+        const now = new Date();
+        await tx
+          .update(issuePlanDecompositions)
+          .set({
+            status: failedRouteStatus,
+            updatedAt: now,
+          })
+          .where(eq(issuePlanDecompositions.id, result.decomposition.id));
+        const latestChildren = result.childIssueIds.length > 0
+          ? await tx
+              .select({ id: issueRows.id, executionState: issueRows.executionState })
+              .from(issueRows)
+              .where(and(eq(issueRows.companyId, sourceIssue.companyId), inArray(issueRows.id, result.childIssueIds)))
+          : [];
+        for (const child of latestChildren) {
+          const previousExecutionState = child.executionState && typeof child.executionState === "object"
+            ? child.executionState as Record<string, unknown>
+            : {};
+          await tx
+            .update(issueRows)
+            .set({
+              status: "blocked",
+              executionState: {
+                ...previousExecutionState,
+                daasAcceptedPlanDecomposition: {
+                  status: failedRouteStatus,
+                  failedChildIssueId: decompositionRouteFailure.issue.id,
+                  daasStatus: decompositionRouteFailure.routed.mission.status,
+                  daasOutcome: decompositionRouteFailure.routed.mission.outcome,
+                  internalExecution: "disabled",
+                  note: "durable pending route before DAAS call; no internal execution before DAAS acceptance",
+                },
+              },
+              updatedAt: now,
+            })
+            .where(and(eq(issueRows.companyId, sourceIssue.companyId), eq(issueRows.id, child.id)));
+        }
+      });
+      await logActivity(db, {
+        companyId: sourceIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.accepted_plan_decomposition_blocked",
+        entityType: "issue",
+        entityId: sourceIssue.id,
+        details: {
+          identifier: sourceIssue.identifier,
+          acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+          decompositionId: result.decomposition.id,
+          status: failedRouteStatus,
+          failedChildIssueId: decompositionRouteFailure.issue.id,
+          daasStatus: decompositionRouteFailure.routed.mission.status,
+          daasOutcome: decompositionRouteFailure.routed.mission.outcome,
+          internalExecution: "disabled",
+        },
+      });
+      res.status(409).json({
+        decomposition: { ...result.decomposition, status: failedRouteStatus },
+        childIssueIds: result.childIssueIds,
+        newlyCreatedChildIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+        failedChildIssueId: decompositionRouteFailure.issue.id,
+        daasMission: decompositionRouteFailure.routed.mission,
+        error: "daas_mission_route_not_accepted",
+        cancellationReason: decompositionRouteFailure.routed.cancellationReason,
+      });
+      return;
+    }
+
+    for (const issue of result.newlyCreatedIssues) {
+      const childRoute = acceptedPlanDaasRoutes.get(issue.id);
+      const childIsInfrastructureIntent = childRoute?.isInfrastructureIntent === true;
       await logActivity(db, {
         companyId: sourceIssue.companyId,
         actorType: actor.actorType,
@@ -4615,7 +4962,8 @@ export function issueRoutes(
         details: {
           parentId: sourceIssue.id,
           identifier: issue.identifier,
-          title: issue.title,
+          title: daasInfrastructureSafeActivityText(childIsInfrastructureIntent, issue.title),
+          ...(childIsInfrastructureIntent ? { daasMissionRoutedTextOmitted: true } : {}),
           inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
           acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
           ...buildCreateIssueActivityStatusDetails(issue, res),
@@ -4648,15 +4996,18 @@ export function issueRoutes(
         });
       }
 
-      void queueIssueAssignmentWakeup({
-        heartbeat,
-        issue,
-        reason: "issue_assigned",
-        mutation: "accepted_plan_decomposition",
-        contextSource: "issue.accepted_plan_decomposition",
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-      });
+      if (!childIsInfrastructureIntent) {
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue,
+          reason: "issue_assigned",
+          mutation: "accepted_plan_decomposition",
+          contextSource: "issue.accepted_plan_decomposition",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          rethrowOnError: false,
+        });
+      }
     }
 
     res.json({
@@ -4743,8 +5094,18 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    const updateInfrastructureIntent = detectDaasInfrastructureTaskIntent(
+      req.body.title,
+      req.body.description,
+      commentBody,
+      ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
+    );
     if (rejectDaasInfrastructureIssueInput(
       res,
+      {
+        assigneeAgentId: req.body.assigneeAgentId ?? existing.assigneeAgentId,
+        status: req.body.status ?? existing.status,
+      },
       req.body.title,
       req.body.description,
       commentBody,
@@ -5030,6 +5391,45 @@ export function issueRoutes(
       }
     }
 
+    const updateRouteInput = updateInfrastructureIntent.isInfrastructureIntent
+      ? {
+          companyId: existing.companyId,
+          agentId: nextAssigneeAgentId ?? actor.agentId ?? "daas",
+          issueId: existing.id,
+          title: (updateFields.title as string | null | undefined) ?? existing.title,
+          description: (updateFields.description as string | null | undefined) ?? existing.description,
+          promptTexts: [
+            commentBody,
+            (updateFields.description as string | null | undefined) ?? existing.description,
+            (updateFields.title as string | null | undefined) ?? existing.title,
+            ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
+          ],
+          instructionTexts: [
+            commentBody,
+            ...readAcceptanceCriteriaTexts(req.body.acceptanceCriteria),
+          ],
+          contextSnapshot: {
+            ...(existing.executionState && typeof existing.executionState === "object"
+              ? existing.executionState as Record<string, unknown>
+              : {}),
+            ...(req.body as Record<string, unknown>),
+            issueId: existing.id,
+            source: "issue.update",
+          },
+          signals: updateInfrastructureIntent.signals,
+        }
+      : null;
+    if (updateRouteInput) {
+      updateFields.executionState = buildPendingDaasMissionExecutionState(
+        updateFields.executionState && typeof updateFields.executionState === "object"
+          ? updateFields.executionState as Record<string, unknown>
+          : existing.executionState && typeof existing.executionState === "object"
+            ? existing.executionState as Record<string, unknown>
+            : null,
+        updateRouteInput,
+      );
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -5039,12 +5439,16 @@ export function issueRoutes(
             id,
             {
               ...updateFields,
+              daasInfrastructureRoutingVerified: updateInfrastructureIntent.isInfrastructureIntent,
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
             },
             tx,
           );
           if (!updated) return null;
+          if (updateRouteInput) {
+            await persistPendingDaasMissionRouteOnIssue(tx as unknown as Db, updateRouteInput);
+          }
 
           await tx.insert(issueExecutionDecisions).values({
             id: decisionId,
@@ -5062,10 +5466,18 @@ export function issueRoutes(
           return updated;
         });
       } else {
-        issue = await svc.update(id, {
-          ...updateFields,
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        issue = await db.transaction(async (tx) => {
+          const txSvc = issueService(tx as unknown as Db);
+          const updated = await txSvc.update(id, {
+            ...updateFields,
+            daasInfrastructureRoutingVerified: updateInfrastructureIntent.isInfrastructureIntent,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          });
+          if (updated && updateRouteInput) {
+            await persistPendingDaasMissionRouteOnIssue(tx as unknown as Db, updateRouteInput);
+          }
+          return updated;
         });
       }
     } catch (err) {
@@ -5093,6 +5505,23 @@ export function issueRoutes(
     }
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const daasCancelledInternalRunIds = updateRouteInput
+      ? await cancelInternalRunsForDaasInfrastructureRoute({ id: existing.id, companyId: existing.companyId })
+      : [];
+    const updateDaasRoute = updateRouteInput
+      ? await routeInfrastructureTicketThroughDaasAdapter(db, updateRouteInput)
+      : null;
+	    if (updateDaasRoute && !updateDaasRoute.dispatch.ok) {
+	      res.status(409).json({
+	        ...issue,
+	        daasMission: updateDaasRoute.mission,
+	        cancelledInternalRunIds: daasCancelledInternalRunIds,
+	        error: "daas_mission_route_not_accepted",
+	        cancellationReason: updateDaasRoute.cancellationReason,
+	      });
       return;
     }
 
@@ -5435,6 +5864,7 @@ export function issueRoutes(
         runId: actor.runId,
       }, {
         sourceTrust: await sourceTrustForActorWrite(issue, actor),
+        daasInfrastructureRoutingVerified: updateInfrastructureIntent.isInfrastructureIntent,
       });
       await issueReferencesSvc.syncComment(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -5461,9 +5891,13 @@ export function issueRoutes(
         entityId: issue.id,
         details: {
           commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
+          bodySnippet: daasInfrastructureSafeActivityText(
+            updateInfrastructureIntent.isInfrastructureIntent,
+            comment.body.slice(0, 120),
+          ),
           identifier: issue.identifier,
-          issueTitle: issue.title,
+          issueTitle: daasInfrastructureSafeActivityText(updateInfrastructureIntent.isInfrastructureIntent, issue.title),
+          ...(updateInfrastructureIntent.isInfrastructureIntent ? { daasMissionRoutedTextOmitted: true } : {}),
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
           ...(scheduledRetrySupersededByComment
@@ -5530,7 +5964,7 @@ export function issueRoutes(
     });
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    const updateWakeups = (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
@@ -5722,13 +6156,24 @@ export function issueRoutes(
       }
 
       for (const { agentId, wakeup } of wakeups.values()) {
-        heartbeat
-          .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+        if (updateInfrastructureIntent.isInfrastructureIntent) {
+          await heartbeat.wakeup(agentId, wakeup);
+        } else {
+          heartbeat
+            .wakeup(agentId, wakeup)
+            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+        }
       }
-    })();
+	    })();
+	    if (updateInfrastructureIntent.isInfrastructureIntent) await updateWakeups;
+	    if (daasCancelledInternalRunIds.length > 0) {
+	      issueResponse = {
+	        ...issueResponse,
+	        cancelledInternalRunIds: daasCancelledInternalRunIds,
+	      } as typeof issueResponse;
+	    }
 
-    res.json({ ...issueResponse, comment });
+	    res.json({ ...issueResponse, comment });
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -5814,8 +6259,43 @@ export function issueRoutes(
       return;
     }
 
-    const checkoutRunId = requireAgentRunId(req, res);
-    if (req.actor.type === "agent" && !checkoutRunId) return;
+	    const checkoutRunId = requireAgentRunId(req, res);
+	    if (req.actor.type === "agent" && !checkoutRunId) return;
+	    const checkoutDurableIntent = readDaasInfrastructureIntentState(issue.executionState);
+	    const checkoutInfrastructureIntent = detectDaasInfrastructureTaskIntent(
+	      issue.title,
+	      issue.description,
+	    );
+	    if (checkoutInfrastructureIntent.isInfrastructureIntent || checkoutDurableIntent) {
+	      const routed = await routeInfrastructureTicketThroughDaasAdapter(db, {
+	        companyId: issue.companyId,
+	        agentId: req.body.agentId,
+	        issueId: issue.id,
+	        title: issue.title,
+	        description: issue.description,
+	        contextSnapshot: {
+          ...(issue.executionState && typeof issue.executionState === "object"
+            ? issue.executionState as Record<string, unknown>
+            : {}),
+          issueId: issue.id,
+          checkoutRunId,
+          source: "issue.checkout",
+        },
+	        signals: checkoutInfrastructureIntent.isInfrastructureIntent
+	          ? checkoutInfrastructureIntent.signals
+	          : checkoutDurableIntent?.signals ?? [],
+	      });
+      if (!routed.dispatch.ok) {
+        throw conflict(routed.cancellationReason, {
+          daasMissionId: routed.dispatch.daasMissionId,
+          daasStatus: routed.dispatch.daasStatus,
+          outcome: routed.dispatch.outcome,
+        });
+      }
+      const routedIssue = await svc.getById(id);
+      res.status(202).json(routedIssue ?? issue);
+      return;
+    }
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
 
@@ -6554,7 +7034,12 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
-    if (rejectDaasInfrastructureIssueInput(res, req.body.body)) return;
+    const commentInfrastructureIntent = detectDaasInfrastructureTaskIntent(req.body.body);
+    if (rejectDaasInfrastructureIssueInput(
+      res,
+      { assigneeAgentId: issue.assigneeAgentId, status: issue.status },
+      req.body.body,
+    )) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -6696,16 +7181,59 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-      sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-    });
+    const commentRouteInput = commentInfrastructureIntent.isInfrastructureIntent
+      ? {
+          companyId: currentIssue.companyId,
+          agentId: currentIssue.assigneeAgentId ?? actor.agentId ?? "daas",
+          issueId: currentIssue.id,
+          title: currentIssue.title,
+          description: currentIssue.description,
+          promptTexts: [req.body.body, currentIssue.description, currentIssue.title],
+          instructionTexts: [req.body.body],
+          contextSnapshot: {
+            ...(currentIssue.executionState && typeof currentIssue.executionState === "object"
+              ? currentIssue.executionState as Record<string, unknown>
+              : {}),
+            issueId: currentIssue.id,
+            source: "issue.comment",
+          },
+          signals: commentInfrastructureIntent.signals,
+        }
+	      : null;
+	    const commentSourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+	    const commentDaasCancelledInternalRunIds = commentRouteInput
+	      ? await cancelInternalRunsForDaasInfrastructureRoute({ id: currentIssue.id, companyId: currentIssue.companyId })
+	      : [];
+	    const comment = commentRouteInput
+	      ? await db.transaction(async (tx) => {
+	          await persistPendingDaasMissionRouteOnIssue(tx as unknown as Db, commentRouteInput);
+          return issueService(tx as unknown as Db).addComment(id, req.body.body, {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            runId: actor.runId,
+          }, {
+	            authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+	            presentation: req.body.presentation ?? null,
+	            metadata: req.body.metadata ?? null,
+	            sourceTrust: commentSourceTrust,
+	            daasInfrastructureRoutingVerified: true,
+	            allowPendingDaasRoute: true,
+	          });
+	        })
+      : await svc.addComment(id, req.body.body, {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        }, {
+          authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+          presentation: req.body.presentation ?? null,
+          metadata: req.body.metadata ?? null,
+          sourceTrust: commentSourceTrust,
+          daasInfrastructureRoutingVerified: false,
+        });
+	    const commentDaasRoute = commentRouteInput
+	      ? await routeInfrastructureTicketThroughDaasAdapter(db, commentRouteInput)
+	      : null;
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -6726,12 +7254,16 @@ export function issueRoutes(
       runId: actor.runId,
       action: "issue.comment_added",
       entityType: "issue",
-      entityId: currentIssue.id,
-      details: {
-        commentId: comment.id,
-        bodySnippet: comment.body.slice(0, 120),
-        identifier: currentIssue.identifier,
-        issueTitle: currentIssue.title,
+        entityId: currentIssue.id,
+        details: {
+          commentId: comment.id,
+          bodySnippet: daasInfrastructureSafeActivityText(
+            commentInfrastructureIntent.isInfrastructureIntent,
+            comment.body.slice(0, 120),
+          ),
+          identifier: currentIssue.identifier,
+          issueTitle: daasInfrastructureSafeActivityText(commentInfrastructureIntent.isInfrastructureIntent, currentIssue.title),
+          ...(commentInfrastructureIntent.isInfrastructureIntent ? { daasMissionRoutedTextOmitted: true } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(scheduledRetrySupersededByComment
@@ -6775,13 +7307,25 @@ export function issueRoutes(
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
     });
 
+	    if (commentDaasRoute && !commentDaasRoute.dispatch.ok) {
+	      res.status(409).json({
+	        commentId: comment.id,
+	        issueId: currentIssue.id,
+	        daasMission: commentDaasRoute.mission,
+	        cancelledInternalRunIds: commentDaasCancelledInternalRunIds,
+	        error: "daas_mission_route_not_accepted",
+	        cancellationReason: commentDaasRoute.cancellationReason,
+      });
+      return;
+    }
+
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    const commentWakeups = (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const skipWake = selfComment || isClosed || commentInfrastructureIntent.isInfrastructureIntent;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
@@ -6838,6 +7382,10 @@ export function issueRoutes(
         }
       }
 
+      if (commentInfrastructureIntent.isInfrastructureIntent) {
+        return wakeups;
+      }
+
       let mentionedIds: string[] = [];
       try {
         mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
@@ -6867,13 +7415,22 @@ export function issueRoutes(
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {
-        heartbeat
-          .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+        if (commentInfrastructureIntent.isInfrastructureIntent) {
+          await heartbeat.wakeup(agentId, wakeup);
+        } else {
+          heartbeat
+            .wakeup(agentId, wakeup)
+            .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+        }
       }
     })();
+    if (commentInfrastructureIntent.isInfrastructureIntent) await commentWakeups;
 
-    res.status(201).json(comment);
+	    res.status(201).json(
+	      commentDaasCancelledInternalRunIds.length > 0
+	        ? { ...comment, cancelledInternalRunIds: commentDaasCancelledInternalRunIds }
+	        : comment,
+	    );
   });
 
   router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {

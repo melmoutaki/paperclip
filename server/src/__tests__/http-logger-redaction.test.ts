@@ -39,7 +39,11 @@ describe("http logger request body redaction", () => {
 
   it("redacts the supported DAAS mission shared-secret header", () => {
     expect(HTTP_LOG_REDACT_PATHS).toContain("req.headers.authorization");
+    expect(HTTP_LOG_REDACT_PATHS).toContain("req.headers.x-paperclip-adapter-token");
+    expect(HTTP_LOG_REDACT_PATHS).toContain("req.headers.x-paperclip-signature");
     expect(HTTP_LOG_REDACT_PATHS).toContain("req.headers.x-paperclip-webhook-secret");
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-paperclip-adapter-token"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-paperclip-signature"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-paperclip-webhook-secret"]');
   });
 });

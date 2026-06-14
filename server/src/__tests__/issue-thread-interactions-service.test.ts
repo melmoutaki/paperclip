@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { DAAS_PAPERCLIP_MISSIONS_ROUTE } from "@paperclipai/shared";
 import {
   agents,
   companies,
@@ -45,6 +46,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
+    delete process.env.DAAS_BASE_URL;
+    delete process.env.DAAS_API_SHARED_SECRET;
+    delete process.env.DAAS_DEFAULT_TARGET_SERVER_ID;
     await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
@@ -236,10 +241,30 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(childrenAfterDuplicateAccept).toHaveLength(1);
   });
 
-  it("rejects infrastructure-intent suggested task interactions before persistence", async () => {
+  it("routes accepted infrastructure-intent suggested tasks through DAAS without internal wake", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Suggested infra task");
+    process.env.DAAS_BASE_URL = "https://daas.example.test";
+    process.env.DAAS_API_SHARED_SECRET = "outbound-daas-secret";
+    process.env.DAAS_DEFAULT_TARGET_SERVER_ID = "srv_prod_1";
+    let childWasDurablyPendingBeforeDaasCall = false;
+    const fetchMock = vi.fn(async () => {
+      const [childBeforeHandoff] = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.title, "Investigate rollout follow-up"));
+      const executionState = childBeforeHandoff?.executionState as Record<string, any> | null;
+      childWasDurablyPendingBeforeDaasCall =
+        childBeforeHandoff?.status === "todo"
+        && executionState?.daasMission?.outcome === "pending_daas_route"
+        && executionState.daasMissionRouted === undefined;
+      return new Response(JSON.stringify({ missionId: "mis_suggested_task", status: "handoff_accepted" }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
-    await expect(interactionsSvc.create({
+    const interaction = await interactionsSvc.create({
       id: issueId,
       companyId,
     }, {
@@ -250,21 +275,105 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         tasks: [
           {
             clientKey: "root",
-            title: "Promote latest image to production",
+            title: "Investigate rollout follow-up",
+            description: "Restart nginx on the production server if the deployment health check fails.",
           },
         ],
       },
     }, {
       userId: "local-board",
-    })).rejects.toMatchObject({
-      status: 422,
     });
 
-    const interactionRows = await db
+    const accepted = await interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId: null,
+      projectId: null,
+    }, interaction.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(childWasDurablyPendingBeforeDaasCall).toBe(true);
+    expect(accepted.createdIssues).toEqual([]);
+
+    const [child] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.title, "Investigate rollout follow-up"));
+    const executionState = child?.executionState as Record<string, any>;
+    expect(executionState.daasMission).toMatchObject({
+      missionId: "mis_suggested_task",
+      status: "handoff_accepted",
+      outcome: "routed_accepted",
+    });
+    expect(executionState.daasMissionRouted).toMatchObject({
+      route: DAAS_PAPERCLIP_MISSIONS_ROUTE,
+      daasMissionId: "mis_suggested_task",
+    });
+  });
+
+  it("fails accepted infrastructure-intent suggested tasks when DAAS blocks the route", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Blocked suggested infra task");
+    process.env.DAAS_BASE_URL = "https://daas.example.test";
+    process.env.DAAS_API_SHARED_SECRET = "outbound-daas-secret";
+    process.env.DAAS_DEFAULT_TARGET_SERVER_ID = "srv_prod_1";
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ missionId: "mis_blocked_suggested_task", status: "blocked_by_policy" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      }),
+    ));
+
+    const interaction = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "root",
+            title: "Investigate blocked rollout follow-up",
+            description: "Restart nginx on the production server if the deployment health check fails.",
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId: null,
+      projectId: null,
+    }, interaction.id, {}, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const [failedInteraction] = await db
       .select()
       .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.issueId, issueId));
-    expect(interactionRows).toHaveLength(0);
+      .where(eq(issueThreadInteractions.id, interaction.id));
+    expect(failedInteraction?.status).toBe("failed");
+
+    const [child] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.title, "Investigate blocked rollout follow-up"));
+    const executionState = child?.executionState as Record<string, any>;
+    expect(executionState.daasMission).toMatchObject({
+      missionId: "mis_blocked_suggested_task",
+      status: "blocked_by_policy",
+      outcome: "routed_surfaced",
+      ok: false,
+    });
+    expect(executionState.daasMissionRouted).toBeUndefined();
   });
 
   it("rejects infrastructure-intent confirmation and question interactions before persistence", async () => {

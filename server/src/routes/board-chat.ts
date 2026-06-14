@@ -6,6 +6,12 @@ import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
+import { detectDaasInfrastructureTaskIntent } from "../services/daas-infrastructure-task-guard.js";
+import {
+  buildPendingDaasMissionExecutionState,
+  persistPendingDaasMissionRouteOnIssue,
+  routeInfrastructureTicketThroughDaasAdapter,
+} from "../services/daas-mission-adapter.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 /**
@@ -175,17 +181,66 @@ export function boardChatRoutes(
       }
     }
 
-    const resolvedIssueId = issueId!;
+	    const resolvedIssueId = issueId!;
 
-    // Persist the user's message. Use the authenticated board/user actor so
-    // attribution and author-type checks pass; "board" (the local fallback)
-    // is distinct from the "board-concierge" sentinel used for replies.
-    const actor = getActorInfo(req);
-    await issueSvc.addComment(resolvedIssueId, message, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.agentId ? undefined : actor.actorId,
-      runId: actor.runId,
-    });
+	    // Persist the user's message. Use the authenticated board/user actor so
+	    // attribution and author-type checks pass; "board" (the local fallback)
+	    // is distinct from the "board-concierge" sentinel used for replies.
+	    const actor = getActorInfo(req);
+	    const infrastructureIntent = detectDaasInfrastructureTaskIntent(message);
+	    if (infrastructureIntent.isInfrastructureIntent) {
+	      const routeInput = {
+	        companyId,
+	        agentId: actor.agentId ?? "daas",
+	        issueId: resolvedIssueId,
+	        title: "Board Operations",
+	        description: "Standing issue for board concierge conversations and decision log",
+	        promptTexts: [message],
+	        instructionTexts: [message],
+	        contextSnapshot: {
+	          issueId: resolvedIssueId,
+	          source: "board.chat",
+	        },
+	        signals: infrastructureIntent.signals,
+	      };
+	      await db.transaction(async (tx) => {
+	        await persistPendingDaasMissionRouteOnIssue(tx as unknown as Db, routeInput);
+	        await issueService(tx as unknown as Db).addComment(resolvedIssueId, message, {
+	          agentId: actor.agentId ?? undefined,
+	          userId: actor.agentId ? undefined : actor.actorId,
+	          runId: actor.runId,
+	        }, {
+	          daasInfrastructureRoutingVerified: true,
+	          allowPendingDaasRoute: true,
+	        });
+	      });
+	      const routed = await routeInfrastructureTicketThroughDaasAdapter(db, routeInput);
+	      if (!routed.dispatch.ok) {
+	        res.status(409).json({
+	          issueId: resolvedIssueId,
+	          daasMission: routed.mission,
+	          error: "daas_mission_route_not_accepted",
+	          cancellationReason: routed.cancellationReason,
+	        });
+	        return;
+	      }
+	      res.writeHead(200, {
+	        "Content-Type": "text/event-stream",
+	        "Cache-Control": "no-cache",
+	        Connection: "keep-alive",
+	        "X-Accel-Buffering": "no",
+	      });
+	      res.write(`data: ${JSON.stringify({ type: "start", issueId: resolvedIssueId })}\n\n`);
+	      res.write(`data: ${JSON.stringify({ type: "status", text: "Infrastructure request routed to DAAS." })}\n\n`);
+	      res.write(`data: ${JSON.stringify({ type: "done", issueId: resolvedIssueId })}\n\n`);
+	      res.end();
+	      return;
+	    }
+	    await issueSvc.addComment(resolvedIssueId, message, {
+	      agentId: actor.agentId ?? undefined,
+	      userId: actor.agentId ? undefined : actor.actorId,
+	      runId: actor.runId,
+	    });
 
     // Build conversation history from recent comments (oldest first).
     const comments = await issueSvc.listComments(resolvedIssueId, { order: "asc" });

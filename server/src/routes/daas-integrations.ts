@@ -5,6 +5,10 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents } from "@paperclipai/db";
 import { DAAS_PAPERCLIP_MISSIONS_ROUTE } from "@paperclipai/shared";
 import { detectDaasInfrastructureTaskIntent } from "../services/daas-infrastructure-task-guard.js";
+import {
+  classifyDaasMissionStatus,
+  isAllowedDaasMissionOrigin,
+} from "../services/daas-mission-adapter.js";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -38,10 +42,7 @@ export function resolveDaasMissionHandoffUrl(): URL | null {
   if (!base) return null;
   try {
     const url = new URL("/api/missions", base);
-    const isLocalDev =
-      url.protocol === "http:" &&
-      (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1");
-    if (url.protocol !== "https:" && !isLocalDev) return null;
+    if (!isAllowedDaasMissionOrigin(url)) return null;
     return url;
   } catch {
     return null;
@@ -90,26 +91,39 @@ export async function handoffMissionToDaas(input: {
     };
   }
   const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+  const data = payload && typeof payload.data === "object" && !Array.isArray(payload.data)
+    ? payload.data as Record<string, unknown>
+    : null;
+  const returnedDaasMissionId =
+    readNonEmptyString(data?.daas_mission_id) ??
+    readNonEmptyString(payload?.missionId) ??
+    readNonEmptyString(payload?.daas_mission_id);
+  const daasStatus =
+    readNonEmptyString(data?.status) ??
+    readNonEmptyString(payload?.status);
+  const classification = classifyDaasMissionStatus(daasStatus);
   if (!response.ok) {
     return {
       ok: false as const,
       status: response.status,
-      daasMissionId: readNonEmptyString(payload?.missionId) ?? input.missionId,
+      daasMissionId: returnedDaasMissionId ?? input.missionId,
+      daasStatus: classification === "routed_surfaced" ? daasStatus : undefined,
     };
   }
-  const daasMissionId = readNonEmptyString(payload?.missionId);
-  const acceptedStatus = readNonEmptyString(payload?.status);
-  if (!daasMissionId || !["accepted", "queued", "created"].includes(acceptedStatus ?? "")) {
+  const acceptedStatus = daasStatus;
+  if (!returnedDaasMissionId || !["accepted", "queued", "created"].includes(acceptedStatus ?? "")) {
     return {
       ok: false as const,
       status: response.status,
-      daasMissionId: input.missionId,
+      daasMissionId: returnedDaasMissionId ?? input.missionId,
+      daasStatus: classification === "routed_surfaced" ? daasStatus : undefined,
     };
   }
   return {
-    ok: true as const,
-    status: response.status,
-    daasMissionId,
+      ok: true as const,
+      status: response.status,
+      daasMissionId: returnedDaasMissionId,
+      daasStatus: acceptedStatus,
   };
 }
 
@@ -179,20 +193,21 @@ export function daasIntegrationRoutes(db: Db) {
       entityId: agentId,
       details: {
         route: DAAS_PAPERCLIP_MISSIONS_ROUTE,
-        missionId: handoff.daasMissionId,
-        status: handoff.ok ? "handoff_accepted" : "handoff_failed",
-        responseStatus: handoff.status,
-        signals: intent.signals,
-      },
+	        missionId: handoff.daasMissionId,
+	        status: handoff.ok ? "handoff_accepted" : handoff.daasStatus ?? "handoff_failed",
+	        responseStatus: handoff.status,
+	        signals: intent.signals,
+	      },
     });
 
-    if (!handoff.ok) {
-      res.status(503).json({
-        missionId: handoff.daasMissionId,
-        status: "daas_mission_handoff_failed",
-        executionAuthority: "daas",
-        paperclipRunId: null,
-      });
+	    if (!handoff.ok) {
+	      const responseStatus = handoff.daasStatus && handoff.status >= 400 ? handoff.status : 409;
+	      res.status(responseStatus).json({
+	        missionId: handoff.daasMissionId,
+	        status: handoff.daasStatus ?? "daas_mission_handoff_failed",
+	        executionAuthority: "daas",
+	        paperclipRunId: null,
+	      });
       return;
     }
 

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -40,6 +41,13 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { detectDaasInfrastructureTaskIntent } from "./daas-infrastructure-task-guard.js";
+import { collectDaasInfrastructureIntentTexts } from "./daas-infrastructure-intent-texts.js";
+import {
+  buildPendingDaasMissionExecutionState,
+  persistPendingDaasMissionRouteOnIssue,
+  routeInfrastructureTicketThroughDaasAdapter,
+  type PendingDaasMissionRouteInput,
+} from "./daas-mission-adapter.js";
 import { issueService, listUnfinalizedExecutionWorkspaceIds } from "./issues.js";
 
 type InteractionActor = {
@@ -131,6 +139,9 @@ function collectStringLeaves(value: unknown, texts: string[] = []): string[] {
 }
 
 function assertNoDaasInfrastructureInteractionIntent(input: CreateIssueThreadInteraction) {
+  if (input.kind === "suggest_tasks") {
+    return;
+  }
   const result = detectDaasInfrastructureTaskIntent(
     input.title,
     input.summary,
@@ -988,6 +999,7 @@ export function issueThreadInteractionService(db: Db) {
       const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
       const createdWakeTargets: IssueWakeTarget[] = [];
+      const daasRouteInputs: PendingDaasMissionRouteInput[] = [];
 
       await db.transaction(async (tx) => {
         const resolvedAt = new Date();
@@ -1018,7 +1030,40 @@ export function issueThreadInteractionService(db: Db) {
             throw unprocessable(`Unable to resolve parent for suggested task ${task.clientKey}`);
           }
 
+          const taskIntentTexts = collectDaasInfrastructureIntentTexts({
+            interactionPayload: interaction.payload,
+            task,
+          });
+          const infrastructureIntent = detectDaasInfrastructureTaskIntent(
+            task.title,
+            task.description ?? null,
+            ...taskIntentTexts,
+          );
+          const routeInput: PendingDaasMissionRouteInput | null = infrastructureIntent.isInfrastructureIntent
+	            ? {
+	                companyId: issue.companyId,
+	                agentId: task.assigneeAgentId ?? actor.agentId ?? "daas",
+	                issueId: randomUUID(),
+	                title: task.title,
+	                description: task.description ?? null,
+	                promptTexts: [
+	                  task.description ?? null,
+	                  task.title,
+	                  ...taskIntentTexts,
+	                ],
+	                instructionTexts: taskIntentTexts,
+	                contextSnapshot: {
+                  interactionId,
+                  sourceIssueId: issue.id,
+                  source: "issue.interaction.suggest_tasks",
+                  task,
+                },
+                signals: infrastructureIntent.signals,
+              }
+            : null;
+          const childIssueId = routeInput?.issueId;
           const { issue: createdIssue } = await issueService(tx as unknown as Db).createChild(parentIssueId, {
+            ...(childIssueId ? { id: childIssueId } : {}),
             title: task.title,
             description: task.description ?? null,
             status: "todo",
@@ -1033,7 +1078,13 @@ export function issueThreadInteractionService(db: Db) {
             createdByUserId: actor.userId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
+            daasInfrastructureRoutingVerified: infrastructureIntent.isInfrastructureIntent,
+            ...(routeInput ? { executionState: buildPendingDaasMissionExecutionState(null, routeInput) } : {}),
           } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+          if (routeInput) {
+            await persistPendingDaasMissionRouteOnIssue(tx as unknown as Db, routeInput);
+            daasRouteInputs.push(routeInput);
+          }
 
           const parentIdentifier = createdByClientKey.get(task.parentClientKey ?? "")?.identifier
             ?? parentById.get(parentIssueId)?.identifier
@@ -1046,11 +1097,13 @@ export function issueThreadInteractionService(db: Db) {
             parentIssueId,
             parentIdentifier,
           });
-          createdWakeTargets.push({
-            id: createdIssue.id,
-            assigneeAgentId: createdIssue.assigneeAgentId ?? null,
-            status: createdIssue.status,
-          });
+          if (!infrastructureIntent.isInfrastructureIntent) {
+            createdWakeTargets.push({
+              id: createdIssue.id,
+              assigneeAgentId: createdIssue.assigneeAgentId ?? null,
+              status: createdIssue.status,
+            });
+          }
         }
 
         const [updated] = await tx
@@ -1075,7 +1128,35 @@ export function issueThreadInteractionService(db: Db) {
         current.updatedAt = updated.updatedAt;
       });
 
-      return {
+	      let failedDaasRoute: Awaited<ReturnType<typeof routeInfrastructureTicketThroughDaasAdapter>> | null = null;
+	      for (const routeInput of daasRouteInputs) {
+	        const routed = await routeInfrastructureTicketThroughDaasAdapter(db, routeInput);
+	        if (!routed.dispatch.ok && !failedDaasRoute) {
+	          failedDaasRoute = routed;
+	        }
+	      }
+	      if (failedDaasRoute) {
+	        const failedAt = new Date();
+	        const [failed] = await db
+	          .update(issueThreadInteractions)
+	          .set({
+	            status: "failed",
+	            updatedAt: failedAt,
+	          })
+	          .where(eq(issueThreadInteractions.id, interactionId))
+	          .returning();
+	        if (failed) {
+	          current.status = failed.status;
+	          current.updatedAt = failed.updatedAt;
+	        }
+	        throw conflict(failedDaasRoute.cancellationReason, {
+	          daasMissionId: failedDaasRoute.dispatch.daasMissionId,
+	          daasStatus: failedDaasRoute.dispatch.daasStatus,
+	          outcome: failedDaasRoute.dispatch.outcome,
+	        });
+	      }
+
+	      return {
         interaction: hydrateInteraction(current),
         createdIssues: createdWakeTargets,
       };

@@ -87,6 +87,8 @@ import {
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { detectDaasInfrastructureTaskIntent } from "./daas-infrastructure-task-guard.js";
+import { readDaasInfrastructureIntentState, readDaasMissionState } from "./daas-mission-adapter.js";
+import { collectDaasInfrastructureIntentTexts } from "./daas-infrastructure-intent-texts.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -132,13 +134,37 @@ function readStringFromRecord(record: unknown, key: string) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function assertNoDaasInfrastructureIssueIntent(...texts: Array<string | null | undefined>) {
+function assertNoUnroutableDaasInfrastructureIssueIntent(
+  options: {
+    assigneeAgentId?: string | null;
+	    status?: string | null;
+	    routingVerified?: boolean;
+	    allowPendingDaasRoute?: boolean;
+	    executionState?: unknown;
+  },
+  ...texts: Array<string | null | undefined>
+) {
   const result = detectDaasInfrastructureTaskIntent(...texts);
   if (!result.isInfrastructureIntent) return;
+  const daasMission = readDaasMissionState(options.executionState);
+  if (
+    options.routingVerified &&
+    options.status !== "done" &&
+    options.status !== "cancelled" &&
+	    daasMission !== null &&
+	    (
+	      daasMission.outcome === "routed_accepted" ||
+	      (options.allowPendingDaasRoute === true && daasMission.outcome === "pending_daas_route")
+	    )
+	  ) return;
   throw unprocessable("Infrastructure tasks must be routed through the DAAS mission adapter", {
-    route: "/api/integrations/paperclip/missions",
+    route: "/api/missions",
     signals: result.signals,
   });
+}
+
+function assertNoDaasInfrastructureIssueIntent(...texts: Array<string | null | undefined>) {
+  assertNoUnroutableDaasInfrastructureIssueIntent({ assigneeAgentId: null }, ...texts);
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -342,6 +368,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  daasInfrastructureRoutingVerified?: boolean;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -4476,11 +4503,19 @@ export function issueService(db: Db) {
       if (!sourceIssue) throw notFound("Source issue not found");
 
       for (const child of data.children) {
-        assertNoDaasInfrastructureIssueIntent(
-          child.title,
-          child.description,
-          ...(child.acceptanceCriteria ?? []),
-        );
+        assertNoUnroutableDaasInfrastructureIssueIntent(
+          {
+            assigneeAgentId: child.assigneeAgentId ?? null,
+	            status: child.status ?? null,
+	            routingVerified: child.daasInfrastructureRoutingVerified === true,
+	            allowPendingDaasRoute: child.daasInfrastructureRoutingVerified === true,
+	            executionState: child.executionState,
+          },
+	        child.title,
+	        child.description,
+	        ...(child.acceptanceCriteria ?? []),
+	        ...collectDaasInfrastructureIntentTexts(child),
+	      );
       }
 
       const requestFingerprint = createAcceptedPlanDecompositionRequestFingerprint({
@@ -4743,11 +4778,23 @@ export function issueService(db: Db) {
       companyId: string,
       data: IssueCreateInput,
     ) => {
-      assertNoDaasInfrastructureIssueIntent(data.title, data.description);
+      assertNoUnroutableDaasInfrastructureIssueIntent(
+        {
+          assigneeAgentId: data.assigneeAgentId ?? null,
+	          status: data.status ?? null,
+	          routingVerified: data.daasInfrastructureRoutingVerified === true,
+	          allowPendingDaasRoute: data.daasInfrastructureRoutingVerified === true,
+	          executionState: data.executionState,
+        },
+	        data.title,
+	        data.description,
+	        ...collectDaasInfrastructureIntentTexts(data),
+	      );
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        daasInfrastructureRoutingVerified: _daasInfrastructureRoutingVerified,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -4991,6 +5038,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        daasInfrastructureRoutingVerified?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -5006,6 +5054,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        daasInfrastructureRoutingVerified,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -5018,10 +5067,6 @@ export function issueService(db: Db) {
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
       }
-      const nextTitle = issueData.title !== undefined ? issueData.title : existing.title;
-      const nextDescription = issueData.description !== undefined ? issueData.description : existing.description;
-      assertNoDaasInfrastructureIssueIntent(nextTitle, nextDescription);
-
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
         updatedAt: new Date(),
@@ -5034,6 +5079,26 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const nextStatus = issueData.status !== undefined ? issueData.status : existing.status;
+      const nextTitle = issueData.title !== undefined ? issueData.title : existing.title;
+      const nextDescription = issueData.description !== undefined ? issueData.description : existing.description;
+      assertNoUnroutableDaasInfrastructureIssueIntent(
+        {
+          assigneeAgentId: nextAssigneeAgentId,
+	          status: nextStatus,
+	          routingVerified: daasInfrastructureRoutingVerified === true,
+	          allowPendingDaasRoute: daasInfrastructureRoutingVerified === true,
+	          executionState: issueData.executionState ?? existing.executionState,
+        },
+	        nextTitle,
+	        nextDescription,
+	        ...collectDaasInfrastructureIntentTexts({
+	          ...existing,
+	          ...issueData,
+	          title: nextTitle,
+	          description: nextDescription,
+	        }),
+	      );
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -5375,11 +5440,28 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+	        companyId: issues.companyId,
+	        title: issues.title,
+	        description: issues.description,
+	        executionState: issues.executionState,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+	      const durableIntent = readDaasInfrastructureIntentState(issueCompany.executionState);
+	      const infrastructureIntent = detectDaasInfrastructureTaskIntent(
+	        issueCompany.title,
+	        issueCompany.description,
+	      );
+	      if (infrastructureIntent.isInfrastructureIntent || durableIntent) {
+	        throw conflict("Infrastructure issue checkout blocked: route through the DAAS mission adapter before any internal execution checkout", {
+	          route: "/api/integrations/paperclip/missions",
+	          signals: infrastructureIntent.isInfrastructureIntent ? infrastructureIntent.signals : durableIntent?.signals ?? [],
+          securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+        });
+      }
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
@@ -5915,17 +5997,33 @@ export function issueService(db: Db) {
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
-        createdAt?: Date | string | null;
-      },
+	        createdAt?: Date | string | null;
+	        daasInfrastructureRoutingVerified?: boolean;
+	        allowPendingDaasRoute?: boolean;
+	      },
     ) => {
       const issue = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          executionState: issues.executionState,
+        })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
-      assertNoDaasInfrastructureIssueIntent(body);
+      assertNoUnroutableDaasInfrastructureIssueIntent(
+        {
+          assigneeAgentId: issue.assigneeAgentId,
+	          status: issue.status,
+	          routingVerified: options?.daasInfrastructureRoutingVerified === true,
+	          allowPendingDaasRoute: options?.allowPendingDaasRoute === true,
+	          executionState: issue.executionState,
+        },
+        body,
+      );
 
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,

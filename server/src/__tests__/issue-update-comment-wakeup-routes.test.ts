@@ -28,6 +28,44 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockDaasMissionAdapter = vi.hoisted(() => ({
+  buildDaasMissionExecutionState: vi.fn((previousState: Record<string, unknown> | null | undefined, mission: Record<string, unknown>) => ({
+    ...(previousState ?? {}),
+    daasMission: mission,
+  })),
+  buildPendingDaasMissionExecutionState: vi.fn((previousState: Record<string, unknown> | null | undefined) => ({
+    ...(previousState ?? {}),
+    daasMission: { status: "pending_daas_route", outcome: "pending_daas_route", ok: false },
+    daasRouteStatus: "pending_daas_route",
+    daasInternalExecution: "disabled",
+  })),
+  persistPendingDaasMissionRouteOnIssue: vi.fn(async () => null),
+  readDaasInfrastructureIntentState: vi.fn(() => null),
+  routeInfrastructureTicketThroughDaasAdapter: vi.fn(async () => ({
+    dispatch: {
+      ok: true,
+      outcome: "routed_accepted",
+      daasStatus: "requested",
+      daasMissionId: "mis_mock",
+      httpStatus: 202,
+      faked: false,
+    },
+    mission: {
+      route: "/api/missions",
+      missionId: "mis_mock",
+      requestFingerprint: "fp_mock",
+      target: null,
+      status: "requested",
+      outcome: "routed_accepted",
+      ok: true,
+      executionAuthority: "daas",
+      httpStatus: 202,
+      signals: [],
+      routedAt: new Date(0).toISOString(),
+    },
+    cancellationReason: "Infrastructure ticket routed to DAAS",
+  })),
+}));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -98,6 +136,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/daas-mission-adapter.js", () => mockDaasMissionAdapter);
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -167,7 +206,18 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+function createRouteDb(activeRunIds: string[] = []) {
+  return {
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => activeRunIds.map((id) => ({ id }))),
+      })),
+    })),
+  };
+}
+
+async function createApp(db: unknown = createRouteDb()) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -184,7 +234,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -223,6 +273,11 @@ describe("issue update comment wakeups", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockDaasMissionAdapter.buildDaasMissionExecutionState.mockClear();
+    mockDaasMissionAdapter.buildPendingDaasMissionExecutionState.mockClear();
+    mockDaasMissionAdapter.persistPendingDaasMissionRouteOnIssue.mockClear();
+    mockDaasMissionAdapter.readDaasInfrastructureIntentState.mockClear();
+    mockDaasMissionAdapter.routeInfrastructureTicketThroughDaasAdapter.mockClear();
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -466,6 +521,83 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("cancels internal runs before completing a DAAS route for infrastructure issue updates", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "todo",
+    });
+    const updated = makeIssue({
+      ...existing,
+      title: "SSH into production and restart nginx through DAAS",
+      description: "Use DAAS to restart nginx on the production server",
+    });
+    const events: string[] = [];
+    let releaseDaasRoute!: () => void;
+    const daasRouteReleased = new Promise<void>((resolve) => {
+      releaseDaasRoute = resolve;
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockHeartbeatService.cancelRun.mockImplementationOnce(async () => {
+      events.push("cancel-internal-run");
+      return {
+        id: "run-infra",
+        companyId: existing.companyId,
+        agentId: ASSIGNEE_AGENT_ID,
+        status: "cancelled",
+      };
+    });
+    mockDaasMissionAdapter.routeInfrastructureTicketThroughDaasAdapter.mockImplementationOnce(async () => {
+      events.push("daas-route-started");
+      await daasRouteReleased;
+      return {
+        dispatch: {
+          ok: true,
+          outcome: "routed_accepted",
+          daasStatus: "requested",
+          daasMissionId: "mis_update",
+          httpStatus: 202,
+          faked: false,
+        },
+        mission: {
+          route: "/api/missions",
+          missionId: "mis_update",
+          requestFingerprint: "fp_update",
+          target: null,
+          status: "requested",
+          outcome: "routed_accepted",
+          ok: true,
+          executionAuthority: "daas",
+          httpStatus: 202,
+          signals: ["infra.service_restart"],
+          routedAt: new Date(0).toISOString(),
+        },
+        cancellationReason: "Infrastructure ticket routed to DAAS",
+      };
+    });
+
+    const responsePromise = request(await createApp(createRouteDb(["run-infra"])))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        title: "SSH into production and restart nginx through DAAS",
+        description: "Use DAAS to restart nginx on the production server",
+      })
+      .then((res) => res);
+
+    await vi.waitFor(() => expect(events).toContain("daas-route-started"));
+    expect(events).toEqual(["cancel-internal-run", "daas-route-started"]);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "run-infra",
+      "Cancelled because infrastructure work was routed to the DAAS mission adapter",
+    );
+
+    releaseDaasRoute();
+    const res = await responsePromise;
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("wakes the assignee on top-level board issue comments", async () => {

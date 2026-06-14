@@ -756,56 +756,11 @@ const plugin = definePlugin({
   async onEnvironmentValidateConfig(
     params: PluginEnvironmentValidateConfigParams,
   ): Promise<PluginEnvironmentValidationResult> {
-    const config = parseDriverConfig(params.config);
-    const errors: string[] = [];
-    const warnings: string[] = [];
-
-    if (config.apiUrl && !isValidUrl(config.apiUrl)) {
-      errors.push("apiUrl must be a valid URL.");
-    }
-    if (config.timeoutMs < 1 || config.timeoutMs > 86_400_000) {
-      errors.push("timeoutMs must be between 1 and 86400000.");
-    }
-    if (config.cpu != null && config.cpu <= 0) {
-      errors.push("cpu must be greater than 0 when provided.");
-    }
-    if (config.sshPort < 1 || config.sshPort > 65_535) {
-      errors.push("sshPort must be between 1 and 65535.");
-    }
-    if (!config.apiKey && !(process.env.EXE_API_KEY?.trim())) {
-      errors.push("exe.dev environments require an API key in config or EXE_API_KEY.");
-    }
-    for (const key of Object.keys(config.env)) {
-      if (!isValidShellEnvKey(key)) {
-        errors.push(`env contains an invalid key: ${key}`);
-      }
-    }
-    if (
-      typeof params.config.strictHostKeyChecking === "string" &&
-      params.config.strictHostKeyChecking.trim().length === 0
-    ) {
-      errors.push("strictHostKeyChecking cannot be empty.");
-    }
-    if (config.sshPrivateKey && !isSecretRef(config.sshPrivateKey)) {
-      const sshKeyError = validateSshPrivateKey(config.sshPrivateKey);
-      if (sshKeyError) errors.push(sshKeyError);
-    }
-
-    warnings.push(
-      "The Paperclip host must have SSH access to the created exe.dev VM, and its SSH key must be registered with exe.dev. The API token only covers provisioning.",
-    );
-    if (config.reuseLease) {
-      warnings.push("reuseLease keeps the VM alive between runs; this provider does not suspend retained VMs.");
-    }
-
-    if (errors.length > 0) {
-      return { ok: false, errors, warnings };
-    }
-
+    void params;
     return {
-      ok: true,
-      warnings,
-      normalizedConfig: { ...config },
+      ok: false,
+      errors: [DAAS_EXE_DEV_DISABLED_MESSAGE],
+      warnings: [],
     };
   },
 

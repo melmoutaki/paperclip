@@ -296,7 +296,7 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
   });
 
-  it("creates agents for dynamically registered external adapter types", async () => {
+	  it("creates agents for dynamically registered external adapter types", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);
 
@@ -311,10 +311,10 @@ describe("agent routes adapter validation", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(res.body.adapterType).toBe("external_test");
-  });
+	    expect(res.body.adapterType).toBe("external_test");
+	  });
 
-  it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
+	  it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
@@ -390,6 +390,90 @@ describe("agent routes adapter validation", () => {
     );
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
     expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("denies process adapter environment tests before secret resolution or adapter probing", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/process/test-environment")
+        .send({
+          adapterConfig: { command: "node", args: ["--version"] },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("denies HTTP adapter environment tests without outbound probes or URL echo", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/http/test-environment")
+        .send({
+          adapterConfig: {
+            url: "https://user:secret@example.test/probe?token=secret",
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    expect(JSON.stringify(res.body)).not.toContain("user:secret@example.test");
+    expect(JSON.stringify(res.body)).not.toContain("token=secret");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("denies dangerous adapter config in environment tests before secret resolution", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/codex_local/test-environment")
+        .send({
+          adapterConfig: { dangerouslyBypassApprovalsAndSandbox: true },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain("adapterConfig.dangerouslyBypassApprovalsAndSandbox");
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("denies SSH execution targets in environment test config before adapter probing", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    const probe = vi.fn();
+    registerServerAdapter({
+      ...externalAdapter,
+      testEnvironment: probe,
+    });
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          adapterConfig: {
+            executionTarget: { kind: "remote", transport: "ssh" },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain("adapterConfig.executionTarget");
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    expect(probe).not.toHaveBeenCalled();
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
   });
 
   it("denies switching an existing agent to a direct process adapter", async () => {
