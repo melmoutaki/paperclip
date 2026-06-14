@@ -261,18 +261,12 @@ export const OUTBOUND_CONNECTORS: readonly OutboundConnectorDescriptor[] = [
     enabledByDefault: false,
     source: "packages/plugins/sandbox-providers/cloudflare/src/bridge-client.ts",
   },
-  {
-    id: "exe-dev-sandbox",
-    title: "exe.dev sandbox execution",
-    purpose:
-      "Provisions and executes commands in exe.dev remote sandboxes when the exe.dev sandbox provider is selected.",
-    classification: "required",
-    activation: "conditional",
-    destinations: ["https://exe.dev/exec", "(per-lease exe.dev VM URL)"],
-    controls: ["(exe.dev sandbox provider configuration: API URL + token)"],
-    enabledByDefault: false,
-    source: "packages/plugins/sandbox-providers/exe-dev/src/plugin.ts",
-  },
+  // NOTE: there is intentionally no exe.dev sandbox connector here. The exe.dev
+  // provider executes commands via direct SSH from Paperclip to the leased VM,
+  // which violates the DAAS invariant (VMs are reached only through the DAAS API
+  // and DAAS SSH Executor). The provider is disabled fork-wide and fails closed
+  // (see packages/plugins/sandbox-providers/exe-dev/src/plugin.ts), so its direct
+  // SSH egress must never be cataloged or blessed as allowed Paperclip outbound.
   {
     id: "kubernetes-sandbox",
     title: "Kubernetes sandbox API",

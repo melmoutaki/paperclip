@@ -40,7 +40,10 @@ const REQUIRED_OUTBOUND_SOURCE_PATHS = [
   "packages/skills-catalog/src/catalog-builder.ts",
   "packages/adapters/openclaw-gateway/src/server/execute.ts",
   // Additional outbound paths surfaced in the same audit.
-  "packages/plugins/sandbox-providers/exe-dev/src/plugin.ts",
+  // NOTE: packages/plugins/sandbox-providers/exe-dev/src/plugin.ts is deliberately
+  // NOT listed here. The exe.dev provider reaches VMs over direct SSH, which the
+  // DAAS invariant forbids; it is disabled fork-wide and must not be cataloged as
+  // allowed Paperclip egress (see the regression test below).
   "packages/plugins/sandbox-providers/kubernetes/src/kube-client.ts",
   "packages/mcp-server/src/client.ts",
   // Previously-catalogued outbound paths.
@@ -87,6 +90,26 @@ describe("OUTBOUND_CONNECTORS catalog", () => {
     for (const connector of OUTBOUND_CONNECTORS) {
       if (connector.classification === "non_required") {
         expect(connector.enabledByDefault).toBe(false);
+      }
+    }
+  });
+
+  it("never catalogs exe.dev direct-SSH execution as allowed Paperclip egress", () => {
+    // DAAS invariant: Paperclip must never SSH directly to a VM. The exe.dev
+    // provider does exactly that, so it must stay disabled and uncatalogued —
+    // neither its plugin source nor its per-lease VM / exe.dev destinations may
+    // ever reappear as a blessed outbound connector.
+    for (const connector of OUTBOUND_CONNECTORS) {
+      expect(
+        connector.source,
+        `exe.dev direct-SSH provider must not be cataloged as Paperclip egress (connector ${connector.id})`,
+      ).not.toContain("sandbox-providers/exe-dev");
+      expect(connector.id).not.toBe("exe-dev-sandbox");
+      for (const destination of connector.destinations) {
+        expect(
+          destination.toLowerCase(),
+          `exe.dev destination must not be cataloged as Paperclip egress (connector ${connector.id})`,
+        ).not.toContain("exe.dev");
       }
     }
   });

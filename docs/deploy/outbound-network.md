@@ -51,7 +51,6 @@ Activation describes *when* a connector can emit:
 | Anthropic usage quota | `api.anthropic.com/api/oauth/usage` | conditional | local Claude OAuth credentials |
 | ChatGPT/Codex usage quota | `chatgpt.com/backend-api/wham/usage` | conditional | local Codex/ChatGPT auth token |
 | Cloudflare sandbox bridge | `${bridgeBaseUrl}/api/paperclip-sandbox/v1/*` | conditional | Cloudflare sandbox provider config |
-| exe.dev sandbox execution | `exe.dev/exec`, per-lease VM URL | conditional | exe.dev sandbox provider config |
 | Kubernetes sandbox API | configured Kubernetes API server | conditional | Kubernetes sandbox provider kubeconfig / in-cluster |
 | Paperclip MCP API client | `${PAPERCLIP_API_URL}` | conditional | `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY` |
 | AWS Secrets Manager | `secretsmanager.<region>.amazonaws.com` | conditional | `PAPERCLIP_SECRETS_PROVIDER=aws_secrets_manager` + AWS creds |
@@ -59,6 +58,18 @@ Activation describes *when* a connector can emit:
 | External adapter npm install | `registry.npmjs.org` (or configured npm registry) | on_demand | instance-admin adapter install/reinstall; `NPM_CONFIG_REGISTRY` / `.npmrc` |
 | Plugin npm install | `registry.npmjs.org` (or configured npm registry) | on_demand | plugin install from npm (`--ignore-scripts`); `NPM_CONFIG_REGISTRY` / `.npmrc` |
 | Adapter npm version check | `registry.npmjs.org/<package>/latest` | on_demand | admin-opened adapter reinstall dialog (browser fetch) |
+
+## Disabled in the DAAS fork (direct SSH)
+
+The upstream **exe.dev sandbox provider** is intentionally **absent** from the
+catalog above. It executes commands by spawning `ssh` directly from the
+Paperclip host to a leased VM, which violates the DAAS invariant that VMs are
+reached only through the DAAS API and the DAAS SSH Executor
+(Paperclip → DAAS API → DAAS SSH Executor → VM). The provider is disabled
+fork-wide and fails closed: every provisioning (HTTPS) and execution (SSH)
+operation refuses with a DAAS-invariant error
+(`packages/plugins/sandbox-providers/exe-dev/src/plugin.ts`). Its direct SSH
+egress must never be re-cataloged or blessed as allowed Paperclip outbound.
 
 ## Enterprise telemetry policy (fail-closed)
 
