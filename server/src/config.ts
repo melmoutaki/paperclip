@@ -20,6 +20,7 @@ import {
   type StorageProvider,
   inferBindModeFromHost,
   resolveRuntimeBind,
+  resolveTelemetryConfig,
   validateConfiguredBindMode,
 } from "@paperclipai/shared";
 import {
@@ -83,6 +84,7 @@ export interface Config {
   storageS3ForcePathStyle: boolean;
   feedbackExportBackendUrl: string | undefined;
   feedbackExportBackendToken: string | undefined;
+  feedbackSharingEnabled: boolean;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
@@ -329,9 +331,19 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
+    // DAAS fork: outbound feedback-trace sharing is off unless explicitly opted in.
+    feedbackSharingEnabled:
+      process.env.PAPERCLIP_FEEDBACK_SHARING_ENABLED === "true" ||
+      process.env.PAPERCLIP_FEEDBACK_SHARING_ENABLED === "1",
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
-    telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    // DAAS fork: telemetry is off unless explicitly opted in via config or env.
+    // Resolve through the shared telemetry resolver so loadConfig() reports the
+    // same live state initTelemetry() acts on — honouring the env opt-in
+    // (PAPERCLIP_TELEMETRY_ENABLED), the universal kill switches, and the
+    // fail-closed enterprise policy (this throws on an enabled-vs-enforced
+    // conflict rather than silently reporting a stale value).
+    telemetryEnabled: resolveTelemetryConfig(fileConfig?.telemetry, process.env).enabled,
   };
 }

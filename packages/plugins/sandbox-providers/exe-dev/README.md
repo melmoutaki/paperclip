@@ -2,6 +2,16 @@
 
 Published exe.dev sandbox provider plugin for Paperclip.
 
+> **Disabled in the DAAS fork.** This provider executes commands by spawning
+> `ssh` directly from the Paperclip host to a leased VM. That violates the DAAS
+> invariant that VMs are reached only through the DAAS API and DAAS SSH Executor
+> (Paperclip → DAAS API → DAAS SSH Executor → VM). In the DAAS fork the provider
+> **fails closed**: every provisioning (HTTPS) and execution (SSH) operation
+> refuses with a DAAS-invariant error and emits no outbound traffic. The
+> configuration documented below describes the upstream behaviour and is retained
+> for reference only — it does not run in this fork. Re-enabling requires routing
+> execution through the DAAS SSH Executor instead of direct SSH.
+
 This package lives in the Paperclip monorepo, but it is intentionally excluded from the root `pnpm` workspace and shaped to publish and install like a standalone npm package. That lets operators install it from the Plugins page by package name without introducing root lockfile churn.
 
 ## Install

@@ -29,6 +29,20 @@ import {
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
 
+/**
+ * DAAS fork invariant: Paperclip must never reach a remote host over a direct
+ * SSH connection (hosts are reached only through the DAAS API + DAAS SSH
+ * Executor). Accepting an `ssh` environment config — on create, update, or
+ * probe — would let an operator stand up exactly that forbidden transport, so
+ * every config-acceptance entry point fails closed for the SSH driver. The
+ * read paths below (parse / runtime resolve / secret-ref collection) still
+ * understand legacy SSH configs so existing rows can be inspected and cleaned
+ * up; they just can never open an SSH session (the runtime SSH driver and the
+ * adapter-utils SSH transport both fail closed too).
+ */
+const DAAS_SSH_ENVIRONMENT_DISABLED_MESSAGE =
+  "SSH environments are disabled in the DAAS fork: Paperclip must reach remote hosts only through the DAAS API and DAAS SSH Executor, never via a direct SSH connection. Use a DAAS-governed environment instead of configuring direct SSH.";
+
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
   secretId: z.string().uuid(),
@@ -54,17 +68,6 @@ const sshEnvironmentConfigSchema = z.object({
     .transform((value) => (value && value.length > 0 ? value : null)),
   strictHostKeyChecking: z.boolean().optional().default(true),
 }).strict();
-
-const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
-  privateKey: z
-    .string()
-    .trim()
-    .optional()
-    .nullable()
-    .transform((value) => (value && value.length > 0 ? value : null)),
-}).strict();
-
-const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
 
 const fakeSandboxEnvironmentConfigSchema = z.object({
   provider: z.literal("fake").default("fake"),
@@ -304,13 +307,7 @@ export function normalizeEnvironmentConfig(input: {
   }
 
   if (input.driver === "ssh") {
-    const parsed = sshEnvironmentConfigSchema.safeParse(parseObject(input.config));
-    if (!parsed.success) {
-      throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
-      });
-    }
-    return parsed.data satisfies SshEnvironmentConfig;
+    throw unprocessable(DAAS_SSH_ENVIRONMENT_DISABLED_MESSAGE);
   }
 
   if (input.driver === "sandbox") {
@@ -343,13 +340,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> | Record<string, unknown> {
   if (input.driver === "ssh") {
-    const parsed = sshEnvironmentConfigProbeSchema.safeParse(parseObject(input.config));
-    if (!parsed.success) {
-      throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
-      });
-    }
-    return parsed.data satisfies SshEnvironmentConfig;
+    throw unprocessable(DAAS_SSH_ENVIRONMENT_DISABLED_MESSAGE);
   }
 
   if (input.driver === "sandbox") {
@@ -393,38 +384,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> {
   if (input.driver === "ssh") {
-    const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config));
-    if (!parsed.success) {
-      throw unprocessable(toErrorMessage(parsed.error), {
-        issues: parsed.error.issues,
-      });
-    }
-    const secrets = secretService(input.db);
-    const { privateKey, ...stored } = parsed.data;
-    let nextPrivateKeySecretRef = stored.privateKeySecretRef;
-    if (privateKey) {
-      nextPrivateKeySecretRef = await createEnvironmentSecret({
-        db: input.db,
-        companyId: input.companyId,
-        environmentName: input.environmentName,
-        driver: input.driver,
-        field: "private-key",
-        provider: input.secretProvider,
-        value: privateKey,
-        actor: input.actor,
-      });
-      if (
-        stored.privateKeySecretRef &&
-        stored.privateKeySecretRef.secretId !== nextPrivateKeySecretRef.secretId
-      ) {
-        await secrets.remove(stored.privateKeySecretRef.secretId);
-      }
-    }
-    return {
-      ...stored,
-      privateKey: null,
-      privateKeySecretRef: nextPrivateKeySecretRef,
-    } satisfies SshEnvironmentConfig;
+    throw unprocessable(DAAS_SSH_ENVIRONMENT_DISABLED_MESSAGE);
   }
 
   if (input.driver === "sandbox") {

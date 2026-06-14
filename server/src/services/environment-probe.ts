@@ -1,6 +1,6 @@
 import type { Environment, EnvironmentProbeResult } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
-import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import { DAAS_DIRECT_SSH_DISABLED_MESSAGE } from "@paperclipai/adapter-utils/ssh";
 import {
   resolveEnvironmentDriverConfigForRuntime,
   type ParsedEnvironmentConfig,
@@ -74,52 +74,20 @@ export async function probeEnvironment(
     });
   }
 
-  try {
-    const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
-
-    return {
-      ok: true,
-      driver: "ssh",
-      summary: `Connected to ${parsed.config.username}@${parsed.config.host} and verified the remote workspace path.`,
-      details: {
-        host: parsed.config.host,
-        port: parsed.config.port,
-        username: parsed.config.username,
-        remoteWorkspacePath: parsed.config.remoteWorkspacePath,
-        remoteCwd,
-      },
-    };
-  } catch (error) {
-    const stderr =
-      error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string"
-        ? error.stderr.trim()
-        : "";
-    const stdout =
-      error && typeof error === "object" && "stdout" in error && typeof error.stdout === "string"
-        ? error.stdout.trim()
-        : "";
-    const code =
-      error && typeof error === "object" && "code" in error
-        ? (error as { code?: unknown }).code
-        : null;
-    const message =
-      stderr ||
-      stdout ||
-      (error instanceof Error ? error.message : String(error)) ||
-      "SSH probe failed.";
-
-    return {
-      ok: false,
-      driver: "ssh",
-      summary: `SSH probe failed for ${parsed.config.username}@${parsed.config.host}.`,
-      details: {
-        host: parsed.config.host,
-        port: parsed.config.port,
-        username: parsed.config.username,
-        remoteWorkspacePath: parsed.config.remoteWorkspacePath,
-        error: message,
-        code,
-      },
-    };
-  }
+  // DAAS fork invariant: probing an SSH environment opens a direct SSH
+  // connection from Paperclip to the remote host, which is forbidden (hosts are
+  // reached only through the DAAS API + DAAS SSH Executor). Fail closed without
+  // attempting the connection.
+  return {
+    ok: false,
+    driver: "ssh",
+    summary: "SSH environment probes are disabled in the DAAS fork.",
+    details: {
+      host: parsed.config.host,
+      port: parsed.config.port,
+      username: parsed.config.username,
+      remoteWorkspacePath: parsed.config.remoteWorkspacePath,
+      error: DAAS_DIRECT_SSH_DISABLED_MESSAGE,
+    },
+  };
 }

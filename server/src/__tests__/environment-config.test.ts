@@ -3,40 +3,10 @@ import { HttpError } from "../errors.js";
 import { normalizeEnvironmentConfig, parseEnvironmentDriverConfig } from "../services/environment-config.ts";
 
 describe("environment config helpers", () => {
-  it("normalizes SSH config into its canonical stored shape", () => {
-    const config = normalizeEnvironmentConfig({
-      driver: "ssh",
-      config: {
-        host: "ssh.example.test",
-        port: "2222",
-        username: "ssh-user",
-        remoteWorkspacePath: "/srv/paperclip/workspace",
-        privateKeySecretRef: {
-          type: "secret_ref",
-          secretId: "11111111-1111-1111-1111-111111111111",
-          version: "latest",
-        },
-        knownHosts: "",
-      },
-    });
-
-    expect(config).toEqual({
-      host: "ssh.example.test",
-      port: 2222,
-      username: "ssh-user",
-      remoteWorkspacePath: "/srv/paperclip/workspace",
-      privateKey: null,
-      privateKeySecretRef: {
-        type: "secret_ref",
-        secretId: "11111111-1111-1111-1111-111111111111",
-        version: "latest",
-      },
-      knownHosts: null,
-      strictHostKeyChecking: true,
-    });
-  });
-
-  it("rejects raw SSH private keys in the stored config shape", () => {
+  it("rejects SSH environment config on the accept path (DAAS direct-SSH disabled)", () => {
+    // DAAS fork invariant: Paperclip must never open a direct SSH connection, so
+    // accepting an `ssh` environment config (create/update) fails closed
+    // regardless of how well-formed the config is.
     expect(() =>
       normalizeEnvironmentConfig({
         driver: "ssh",
@@ -45,20 +15,11 @@ describe("environment config helpers", () => {
           port: "2222",
           username: "ssh-user",
           remoteWorkspacePath: "/srv/paperclip/workspace",
-          privateKey: "PRIVATE KEY",
-        },
-      }),
-    ).toThrow(HttpError);
-  });
-
-  it("rejects SSH config without an absolute remote workspace path", () => {
-    expect(() =>
-      normalizeEnvironmentConfig({
-        driver: "ssh",
-        config: {
-          host: "ssh.example.test",
-          username: "ssh-user",
-          remoteWorkspacePath: "workspace",
+          privateKeySecretRef: {
+            type: "secret_ref",
+            secretId: "11111111-1111-1111-1111-111111111111",
+            version: "latest",
+          },
         },
       }),
     ).toThrow(HttpError);
@@ -69,13 +30,13 @@ describe("environment config helpers", () => {
         config: {
           host: "ssh.example.test",
           username: "ssh-user",
-          remoteWorkspacePath: "workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
         },
       }),
-    ).toThrow("absolute");
+    ).toThrow(/disabled in the DAAS fork/i);
   });
 
-  it("parses a persisted SSH environment into a typed driver config", () => {
+  it("still parses a persisted SSH environment into a typed driver config", () => {
     const parsed = parseEnvironmentDriverConfig({
       driver: "ssh",
       config: {

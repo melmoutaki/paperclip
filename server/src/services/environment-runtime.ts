@@ -15,7 +15,7 @@ import type {
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import { DAAS_DIRECT_SSH_DISABLED_MESSAGE } from "@paperclipai/adapter-utils/ssh";
 import { environmentService } from "./environments.js";
 import {
   parseEnvironmentDriverConfig,
@@ -252,35 +252,14 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   return {
     driver: "ssh",
 
-    async acquireRunLease(input) {
-      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
-        issueId: input.issueId,
-        heartbeatRunId: input.heartbeatRunId,
-      });
-      if (parsed.driver !== "ssh") {
-        throw new Error(`Expected SSH environment config for driver "${input.environment.driver}".`);
-      }
-
-      const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
-      return await environmentsSvc.acquireLease({
-        companyId: input.companyId,
-        environmentId: input.environment.id,
-        executionWorkspaceId: input.executionWorkspaceId,
-        issueId: input.issueId,
-        heartbeatRunId: input.heartbeatRunId,
-        leasePolicy: "ephemeral",
-        provider: "ssh",
-        providerLeaseId: `ssh://${parsed.config.username}@${parsed.config.host}:${parsed.config.port}${remoteCwd}`,
-        metadata: {
-          driver: input.environment.driver,
-          executionWorkspaceMode: input.executionWorkspaceMode,
-          host: parsed.config.host,
-          port: parsed.config.port,
-          username: parsed.config.username,
-          remoteWorkspacePath: parsed.config.remoteWorkspacePath,
-          remoteCwd,
-        },
-      });
+    // DAAS fork invariant: Paperclip must never open a direct SSH connection to
+    // a remote host (hosts are reached only through the DAAS API + DAAS SSH
+    // Executor). Acquiring an SSH run lease would stand up exactly that direct
+    // transport, so fail closed here. The driver stays registered only so that
+    // any legacy `ssh` lease still resolves to a driver that can release/clean
+    // it up — it can never establish a new direct-SSH session.
+    async acquireRunLease() {
+      throw new Error(DAAS_DIRECT_SSH_DISABLED_MESSAGE);
     },
 
     async releaseRunLease(input) {

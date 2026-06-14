@@ -114,6 +114,18 @@ type FeedbackTraceShareClient = {
 
 type FeedbackServiceOptions = {
   shareClient?: FeedbackTraceShareClient;
+  /**
+   * Whether outbound feedback-trace sharing is enabled (DAAS fork default: OFF).
+   *
+   * When this is `false`, {@link feedbackService.flushPendingFeedbackTraces}
+   * short-circuits: it does not query, rebuild bundles, call the share client,
+   * or mutate export attempts. Queued `pending` traces stay pending and are
+   * only ever attempted once sharing is enabled — so the background flush worker
+   * generates no outbound traffic and does not churn attempt counters while the
+   * gate is off. Omitted (`undefined`) preserves the prior behavior for callers
+   * that construct the service without a share client.
+   */
+  feedbackSharingEnabled?: boolean;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1777,6 +1789,19 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       limit?: number;
       now?: Date;
     }) => {
+      // DAAS fork: feedback-trace sharing is a non-required outbound integration
+      // and is OFF by default. It must FAIL CLOSED — sharing emits only when a
+      // caller has explicitly opted in with `feedbackSharingEnabled === true`. An
+      // omitted/undefined option is treated as disabled, so a caller that wires a
+      // shareClient but forgets to pass the flag never uploads. While disabled,
+      // the background flusher does no work — no row selection, no bundle
+      // rebuilds, no share-client calls, and no attempt mutations. Queued
+      // `pending` traces stay pending and are only attempted once sharing is
+      // explicitly enabled (see docs/feedback-voting.md).
+      if (options.feedbackSharingEnabled !== true) {
+        return { attempted: 0, sent: 0, failed: 0, skipped: "sharing_disabled" as const };
+      }
+
       const shareClient = options.shareClient;
       if (!shareClient) {
         const filters = [eq(feedbackExports.status, "pending")];

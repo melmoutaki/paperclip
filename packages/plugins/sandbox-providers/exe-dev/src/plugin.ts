@@ -81,6 +81,22 @@ const DEFAULT_SETUP_SCRIPT =
   "(curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && " +
   "sudo apt-get install -y nodejs)";
 
+// DAAS fork invariant: Paperclip must never open a direct connection — SSH or
+// otherwise — to a leased VM. The only sanctioned path to a VM is
+// Paperclip -> DAAS API -> DAAS SSH Executor -> VM. This provider's execution
+// model is "provision over exe.dev's HTTPS API, then SSH straight from the
+// Paperclip host to the VM", which violates that invariant and cannot be
+// satisfied without a DAAS SSH Executor integration. Until such routing exists
+// the provider is disabled fork-wide and fails closed: every outbound lifecycle
+// (HTTPS provisioning) and execution (direct SSH) operation refuses rather than
+// provisioning a VM that Paperclip could only reach over direct SSH egress.
+export const DAAS_EXE_DEV_DISABLED_MESSAGE =
+  "exe.dev sandbox provider is disabled in the DAAS fork: it executes commands via direct SSH from Paperclip to the leased VM, which violates the DAAS invariant that VMs are reached only through the DAAS API and DAAS SSH Executor. Route sandbox execution through the DAAS governed path instead of enabling direct SSH egress from Paperclip.";
+
+function assertDaasExeDevDisabled(): never {
+  throw new Error(DAAS_EXE_DEV_DISABLED_MESSAGE);
+}
+
 class ExeDevApiError extends Error {
   readonly status: number;
   readonly body: string;
@@ -374,6 +390,10 @@ async function runLifecycleCommand(
   command: string,
   logCommand = command,
 ): Promise<unknown> {
+  // Fail closed before any outbound HTTPS provisioning call: a provisioned VM
+  // is reachable from Paperclip only over direct SSH, which the DAAS invariant
+  // forbids, so provisioning it would be wasted egress at best.
+  assertDaasExeDevDisabled();
   const response = await fetch(config.apiUrl, {
     method: "POST",
     headers: {
@@ -584,6 +604,9 @@ async function runSshCommand(
   remoteCommand: string,
   options: { stdin?: string; timeoutMs?: number } = {},
 ): Promise<SshExecutionResult> {
+  // Fail closed: direct SSH from Paperclip to a leased VM is the exact pattern
+  // the DAAS invariant prohibits. Refuse before spawning `ssh`.
+  assertDaasExeDevDisabled();
   const timeoutMs = options.timeoutMs ?? config.timeoutMs;
   const identity = await prepareSshIdentity(config);
 

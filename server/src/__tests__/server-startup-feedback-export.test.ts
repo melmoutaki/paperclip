@@ -84,6 +84,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     storageS3ForcePathStyle: false,
     feedbackExportBackendUrl: "https://telemetry.example.com",
     feedbackExportBackendToken: "telemetry-token",
+    feedbackSharingEnabled: false,
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,

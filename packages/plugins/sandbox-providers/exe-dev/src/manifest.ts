@@ -22,7 +22,7 @@ const manifest: PaperclipPluginManifestV1 = {
       kind: "sandbox_provider",
       displayName: "exe.dev VM",
       description:
-        "Provisions exe.dev VMs through the HTTPS API, then runs commands over direct SSH for long-lived Paperclip workloads.",
+        "Disabled in the DAAS fork: this driver reaches VMs over direct SSH from Paperclip, which violates the DAAS invariant (VMs are reached only via the DAAS API and DAAS SSH Executor). It fails closed and performs no provisioning or execution.",
       configSchema: {
         type: "object",
         properties: {

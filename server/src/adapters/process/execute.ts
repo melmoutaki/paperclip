@@ -11,10 +11,27 @@ import {
   runChildProcess,
 } from "../utils.js";
 
+const DIRECT_SSH_COMMAND_ERROR =
+  "DAAS fork invariant: the process adapter cannot execute direct SSH. Route infrastructure work through the DAAS mission adapter.";
+
+function commandBasename(command: string): string {
+  const normalized = command.trim().replace(/\\/g, "/");
+  const lastSegment = normalized.split("/").filter(Boolean).pop() ?? normalized;
+  return lastSegment.toLowerCase();
+}
+
+export function assertProcessCommandAllowed(command: string): void {
+  const base = commandBasename(command);
+  if (base === "ssh" || base === "ssh.exe") {
+    throw new Error(DIRECT_SSH_COMMAND_ERROR);
+  }
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, onLog, onMeta } = ctx;
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
+  assertProcessCommandAllowed(command);
 
   const args = asStringArray(config.args);
   const cwd = asString(config.cwd, process.cwd());

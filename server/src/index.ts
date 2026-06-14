@@ -570,6 +570,7 @@ export async function startServer(): Promise<StartedServer> {
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
+    feedbackSharingEnabled: config.feedbackSharingEnabled,
   });
   const backupSettingsSvc = instanceSettingsService(db);
   let databaseBackupInFlight = false;

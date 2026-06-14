@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T259",
+  "title": "Disable Paperclip telemetry and non-required outbound integrations by default in the DAAS fork",
+  "author_engine": "codex",
+  "author_pool": "OAI-C55-DEVOPS",
+  "reviewer_engine": "claude",
+  "reviewer_cli_version": "2.1.169 (Claude Code)",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "f00619d2170d0fd93ccb505377a892b719f5d3a8",
+  "reviewed_sha": "98d3bff17840564123a6be8f779fc5773e5a002b",
+  "diff_sha256": "f8914ef6ce00db33dd38448bf40bfc5cec96d9e6c24d811b1a094ddb139b596d",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "60a6e1f642a78b8e5ca1971a",
+  "review_log": ".gate/records/T259-98d3bff17840.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}

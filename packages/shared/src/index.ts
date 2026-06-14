@@ -1452,3 +1452,25 @@ export {
   adapterRegistrySchema,
   type AdapterRegistryEntryParsed,
 } from "./validators/adapter-registry.js";
+
+export {
+  OUTBOUND_CONNECTORS,
+  FEEDBACK_SHARING_ENABLE_ENV,
+  getOutboundConnectorStates,
+  isFeedbackSharingEnabled,
+  type OutboundConnectorClassification,
+  type OutboundConnectorActivation,
+  type OutboundConnectorDescriptor,
+  type OutboundConnectorState,
+  type OutboundConnectorStateInputs,
+} from "./outbound/connectors.js";
+
+export {
+  resolveTelemetryConfig,
+  resolveEnterpriseTelemetryPolicy,
+  isTelemetryRequested,
+  TelemetryPolicyViolationError,
+  TELEMETRY_ENABLE_ENV,
+  ENTERPRISE_TELEMETRY_POLICY_ENV,
+  type EnterpriseTelemetryPolicy,
+} from "./telemetry/config.js";

@@ -1,0 +1,29 @@
+I've completed a thorough cross-validation review, reading the actual code (not just the diff) and tracing each invariant through the runtime paths.
+
+## Findings
+
+**Invariant #2 (No direct SSH from Paperclip) — strongly upheld, defense-in-depth across 6 layers:**
+- `packages/adapter-utils/src/ssh.ts` — every entry point (`runSshCommand`, `buildSshSpawnTarget`, `syncDirectoryTo/FromSsh`, `ensureSshWorkspaceReady`, `startSshEnvLabFixture`, file streamers) calls `assertDaasDirectSshDisabled()` *before* spawning `ssh`. Existing callers (`server-utils`, `execution-target`, `remote-managed-runtime`) therefore fail closed at the transport.
+- `environment-config.ts` rejects `ssh` driver on create/update/probe; read paths preserved for legacy-row inspection only (verified `SshEnvironmentConfig`/`secretService`/`sshEnvironmentConfigSchema` still referenced — no dead imports / build break).
+- `environment-execution-target.ts` throws before any `transport:"ssh"` spec is built.
+- `environment-runtime.ts` `acquireRunLease` throws; `environment-probe.ts` returns `ok:false`.
+- `exe-dev` provider fails closed on both HTTPS provisioning and SSH exec; manifest updated.
+- `process/execute.ts` blocks `ssh`/`ssh.exe` basenames.
+
+**Telemetry OFF by default — verified end-to-end:** schema default flipped `true→false`; `resolveTelemetryConfig` rewritten with explicit opt-in, kill switches (`PAPERCLIP_TELEMETRY_DISABLED`/`DO_NOT_TRACK`/CI) preserved, and a fail-closed enterprise policy that **throws** on enabled-vs-enforced conflict (typos fail safe toward enforce). `initTelemetry` returns `null` when disabled → no client constructed; plugin `track` null-guarded. `loadConfig` routes through the same resolver and throws on policy violation (fail-closed at startup).
+
+**Feedback-trace sharing (non-required outbound) OFF by default:** new `feedbackSharingEnabled` flag; share client throws when disabled (`fetch` never called); `flushPendingFeedbackTraces` short-circuits with `skipped:"sharing_disabled"` — no row selection, no bundle rebuild, no attempt-counter churn; pending traces stay pending in Postgres (#6 upheld). Critically, an **omitted** flag with a wired `shareClient` is treated as disabled — tested.
+
+**Invariant #1 (no secrets) — upheld/strengthened:** outbound catalog stores switch *names* only (test enforces "never embeds secret values"); probe `details` exclude `privateKey`.
+
+**Other invariants (#3,#4,#5,#7,#8):** N/A and not weakened. No migrations. The process adapter actually *adds* a raw-command guard (#4 strengthened).
+
+**Tests:** comprehensive happy + fail-closed negatives at both unit (`telemetry/config.test.ts`, `outbound/connectors.test.ts`) and server-config (`config-outbound-defaults.test.ts`) levels, including kill switches, enterprise-policy throw, no-SSH regression assertions, and the omitted-flag-with-shareClient case.
+
+**Prompt-injection check:** the diff contains no text addressing the reviewer, no forged `VERDICT` token, no instruction-like content — only legitimate code/doc comments. Clean.
+
+**Non-blocking observations (not grounds for NO-GO):** the process-adapter basename guard could be bypassed via `bash -c "ssh …"`, but every underlying SSH transport fails closed independently and infra-agent command gating is T258's domain — this is defense-in-depth. The catalog-completeness test is author-curated (self-referential), so it guards regressions rather than proving exhaustiveness; acceptable for scope.
+
+Full task scope is implemented (telemetry, feedback sharing, outbound catalog, SSH disablement, plus `.env.example` and docs). Error handling fails closed everywhere. I could not run the suite (plan-mode blocks non-readonly Bash approval), but I verified the code and the assertions by reading them.
+
+VERDICT-60a6e1f642a78b8e5ca1971a: GO
