@@ -14,7 +14,6 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
@@ -56,6 +55,7 @@ import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-con
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { filterAcpxModelsByAgent } from "../lib/acpx-model-filter";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import { filterDaasSafeAdapterOptions } from "../adapters/daas-safety";
 
 /* ---- Create mode values ---- */
 
@@ -911,8 +911,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
                     const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
                     if (t === "codex_local") {
-                      nextValues.dangerouslyBypassSandbox =
-                        DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+                      nextValues.dangerouslyBypassSandbox = false;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
                     } else if (t === "cursor") {
@@ -943,8 +942,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         mode: "",
                         ...(t === "codex_local"
                           ? {
-                              dangerouslyBypassApprovalsAndSandbox:
-                                DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+                              dangerouslyBypassApprovalsAndSandbox: false,
                             }
                           : {}),
                       },
@@ -1407,8 +1405,10 @@ function AdapterTypeDropdown({
   const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(
     () =>
-      listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
-        (item) => !disabledTypes.has(item.value),
+      filterDaasSafeAdapterOptions(
+        listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
+          (item) => !disabledTypes.has(item.value),
+        ),
       ),
     [disabledTypes],
   );

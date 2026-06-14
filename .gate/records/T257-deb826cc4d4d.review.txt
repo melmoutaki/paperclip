@@ -1,0 +1,33 @@
+Tests are blocked from running under plan mode, but I have verified the implementation thoroughly by reading the code in context. The diff is coherent, well-integrated, and there are no leftover references. Let me record my review.
+
+## Cross-Validation Review — T257
+
+**Task scope:** Hide or deny direct SSH, raw shell, secret access, and unrestricted infrastructure connectors in the Paperclip fork UI/API.
+
+### What the change does
+- **Shared constants** (`packages/shared/src/constants.ts`): adds `DAAS_BLOCKED_INFRASTRUCTURE_ADAPTER_TYPES` (`process`, `http`), `DAAS_DANGEROUS_ADAPTER_CONFIG_KEYS` (the three `dangerously*` bypass flags), and a single denial message — all exported and reused on both server and UI. Good single-source-of-truth.
+- **Server guard** (`daas-infrastructure-guard.ts`): `isDaasBlockedInfrastructureAdapterType` + recursive `collectDaasDirectInfrastructureConfigPaths`, which flags truthy bypass keys (`!== false/null/undefined` → fail-closed) and remote/SSH `executionTarget`s while allowing `transport: "sandbox"`.
+- **API enforcement** (`routes/agents.ts`): guard wired into `assertNoAgentAdapterConfigMutation` so it runs on **create, hire, PATCH, and every runtime model-profile adapterConfig**. PATCH also blocks switching an existing agent to a blocked adapter type *before* the config branch. Codex default bypass flag flipped from the imported `DEFAULT_…=true` to hard `false`.
+- **Import path** (`company-portability.ts`): blocking now applies to **all** import modes (was `agent_safe`-only), default adapter type for type-less imports moved `process → claude_local`, and both adapterConfig and runtimeConfig are scanned for blocked paths.
+- **UI**: removes the "Skip permissions" / "Bypass sandbox" toggles from claude/codex/opencode field sets, filters blocked adapter types out of the dropdown (`filterDaasSafeAdapterOptions`), and filters dangerous/secret-looking schema fields (`isDaasBlockedInfrastructureConfigField`) including from default application.
+
+### Verification performed
+- `forbidden()` → HTTP 403, matching all four route tests' expectations.
+- No dangling references to the removed `DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX`; `help`/`ToggleField` imports cleaned from opencode, still validly used in claude/codex.
+- PATCH route: the `requestedAdapterType` declaration was correctly relocated (no duplicate/shadow), and all helpers (`assertKnownAdapterType`, `listRuntimeModelProfileAdapterConfigs`, `assertKnownImportAdapterType`) exist.
+- Guard runs on **raw** config before defaults are applied, so a caller-supplied `dangerously*: true` is rejected rather than silently normalized.
+
+### Invariant mapping
+- **#2 No direct SSH / #4 untrusted input:** strengthened — `process`/`http` and ssh/remote execution targets denied server-side, fail-closed; config treated as data. Upheld.
+- **#1 No secrets in UI/logs:** denial messages carry no secret material; secret-looking fields hidden in UI. Upheld.
+- **#3 DAAS final authority:** denial enforced at the server, not via agent text. Upheld.
+- **#5–#8:** not applicable (no proof/lock/migration/DB-schema surface touched).
+- No prompt-injection or forged-verdict content in the diff.
+
+### Findings (non-blocking)
+1. `collectDaasDirectInfrastructureConfigPaths` returns `[]` for arrays, so a dangerous key or `executionTarget` nested *inside an array element* would escape detection. Realistic exploit risk is low (bypass flags are object keys; the arbitrary-command `process` adapter is blocked by type, and `modelProfiles` is a keyed object, not an array), but recursing into array elements would close the gap. Recommended hardening, not a scope/invariant failure.
+
+### Verdict rationale
+Full task scope is implemented across UI hiding **and** server denial, enforcement covers all agent mutation entry points plus imports, error handling fails closed, and tests cover happy + negative paths (process adapter, bypass flag, SSH execution target, adapter-type switch, import rejection). The one finding is a defense-in-depth nit on an unrealistic vector. No DAAS invariant is weakened.
+
+VERDICT-2c4d2233ac3c80c6669321a9: GO

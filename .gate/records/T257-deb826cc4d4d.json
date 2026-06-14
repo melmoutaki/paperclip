@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T257",
+  "title": "Modify Paperclip fork UI/API to hide or deny direct SSH, raw shell, secret access and unrestricted infrastructure connectors",
+  "author_engine": "codex",
+  "author_pool": "OAI-C55-DEVOPS",
+  "reviewer_engine": "claude",
+  "reviewer_cli_version": "2.1.169 (Claude Code)",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "cb69f2b7769022bdb6dd1b324b01d009a6eae8b5",
+  "reviewed_sha": "deb826cc4d4ded92c724271588d90ad6a5fc437b",
+  "diff_sha256": "3dfdb4ed542d2bfd04da32a0f74312ef46c87d9201a79e5a9ce15169d3ae5eaf",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "2c4d2233ac3c80c6669321a9",
+  "review_log": ".gate/records/T257-deb826cc4d4d.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}

@@ -5,6 +5,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
+import { DAAS_INFRASTRUCTURE_DENIAL_MESSAGE } from "@paperclipai/shared";
 
 const companySvc = {
   getById: vi.fn(),
@@ -2247,7 +2248,7 @@ describe("company portability", () => {
       expect.objectContaining({
         slug: "claudecoder",
         name: "ClaudeCoder",
-        adapterType: "process",
+        adapterType: "claude_local",
       }),
     ]);
     expect(preview.envInputs).toEqual([]);
@@ -2300,7 +2301,7 @@ describe("company portability", () => {
     }));
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       name: "ClaudeCoder",
-      adapterType: "process",
+      adapterType: "claude_local",
     }));
   });
 
@@ -3253,7 +3254,7 @@ describe("company portability", () => {
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toContain('name: "ClaudeCoder"');
   });
 
-  it("rejects dangerous adapter types on agent-safe imports", async () => {
+  it("rejects dangerous adapter types on imports", async () => {
     const portability = companyPortabilityService({} as any);
     const exported = await portability.exportBundle("company-1", {
       include: {
@@ -3294,9 +3295,8 @@ describe("company portability", () => {
         },
       },
     }, "user-1", {
-      mode: "agent_safe",
       sourceCompanyId: "company-1",
-    })).rejects.toThrow('Adapter type "process" is not allowed in safe imports');
+    })).rejects.toThrow(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
 
     expect(agentSvc.create).not.toHaveBeenCalled();
   });

@@ -91,25 +91,7 @@ export function ClaudeLocalAdvancedFields({
         onChange={(v) =>
           isCreate
             ? set!({ chrome: v })
-            : mark("adapterConfig", "chrome", v)
-        }
-      />
-      <ToggleField
-        label="Skip permissions"
-        hint={help.dangerouslySkipPermissions}
-        checked={
-          isCreate
-            ? values!.dangerouslySkipPermissions
-            : eff(
-                "adapterConfig",
-                "dangerouslySkipPermissions",
-                config.dangerouslySkipPermissions !== false,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslySkipPermissions: v })
-            : mark("adapterConfig", "dangerouslySkipPermissions", v)
+          : mark("adapterConfig", "chrome", v)
         }
       />
       <Field label="Max turns per run" hint={help.maxTurnsPerRun}>

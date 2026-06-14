@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
 
@@ -12,6 +12,7 @@ import {
 } from "../components/agent-config-primitives";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { ChevronDown } from "lucide-react";
+import { isDaasBlockedInfrastructureConfigField } from "./daas-safety";
 
 // ── Select field (extracted to keep hooks at component top level) ──────
 function SelectField({
@@ -329,12 +330,16 @@ export function SchemaConfigFields({
   mark,
 }: AdapterConfigFieldsProps) {
   const schema = useConfigSchema(adapterType);
+  const safeFields = useMemo(
+    () => schema?.fields.filter((field) => !isDaasBlockedInfrastructureConfigField(field)) ?? [],
+    [schema],
+  );
 
   const [defaultsApplied, setDefaultsApplied] = useState(false);
   useEffect(() => {
     if (!schema || !isCreate || defaultsApplied) return;
     const defaults: Record<string, unknown> = {};
-    for (const field of schema.fields) {
+    for (const field of safeFields) {
       const def = getDefaultValue(field);
       if (def !== undefined && def !== "") {
         defaults[field.key] = def;
@@ -346,9 +351,9 @@ export function SchemaConfigFields({
       });
     }
     setDefaultsApplied(true);
-  }, [schema, isCreate, defaultsApplied, set, values?.adapterSchemaValues]);
+  }, [schema, safeFields, isCreate, defaultsApplied, set, values?.adapterSchemaValues]);
 
-  if (!schema || schema.fields.length === 0) return null;
+  if (!schema || safeFields.length === 0) return null;
 
   function readValue(field: ConfigFieldSchema): unknown {
     if (isCreate) {
@@ -369,7 +374,7 @@ export function SchemaConfigFields({
 
       // When provider changes, auto-clear model if it's not in the new provider's list
       if (field.key === "provider" && schema) {
-        const modelField = schema.fields.find((f) => f.key === "model");
+        const modelField = safeFields.find((f) => f.key === "model");
         if (modelField?.meta?.providerModels) {
           const modelsByProvider = modelField.meta.providerModels as Record<string, string[]>;
           const providerModels = modelsByProvider[String(value)] ?? [];
@@ -386,7 +391,7 @@ export function SchemaConfigFields({
 
       // Same logic for edit mode
       if (field.key === "provider" && schema) {
-        const modelField = schema.fields.find((f) => f.key === "model");
+        const modelField = safeFields.find((f) => f.key === "model");
         if (modelField?.meta?.providerModels) {
           const modelsByProvider = modelField.meta.providerModels as Record<string, string[]>;
           const providerModels = modelsByProvider[String(value)] ?? [];
@@ -401,7 +406,7 @@ export function SchemaConfigFields({
 
   return (
     <>
-      {schema.fields
+      {safeFields
         .filter((field) => fieldMatchesVisibleWhen(field, readValue, schema))
         .map((field) => {
           switch (field.type) {

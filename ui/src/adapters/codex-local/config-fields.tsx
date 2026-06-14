@@ -30,8 +30,6 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
-  const bypassEnabled =
-    config.dangerouslyBypassApprovalsAndSandbox === true || config.dangerouslyBypassSandbox === true;
   const fastModeEnabled = isCreate
     ? Boolean(values!.fastMode)
     : eff("adapterConfig", "fastMode", Boolean(config.fastMode));
@@ -75,24 +73,6 @@ export function CodexLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
-        label="Bypass sandbox"
-        hint={help.dangerouslyBypassSandbox}
-        checked={
-          isCreate
-            ? values!.dangerouslyBypassSandbox
-            : eff(
-                "adapterConfig",
-                "dangerouslyBypassApprovalsAndSandbox",
-                bypassEnabled,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslyBypassSandbox: v })
-            : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
-        }
-      />
       <ToggleField
         label="Enable search"
         hint={help.search}
