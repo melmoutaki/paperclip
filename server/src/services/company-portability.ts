@@ -48,6 +48,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
+  DAAS_INFRASTRUCTURE_DENIAL_MESSAGE,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -61,6 +62,10 @@ import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import {
+  collectDaasDirectInfrastructureConfigPaths,
+  isDaasBlockedInfrastructureAdapterType,
+} from "./daas-infrastructure-guard.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
@@ -133,7 +138,6 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
-const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 
@@ -2709,7 +2713,7 @@ function buildManifestFromPackageFiles(
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
       reportsToExistingAgentId: asString(extension.reportsToExistingAgentId),
       reportsToExistingAgentSlug: asString(extension.reportsToExistingAgentSlug),
-      adapterType: asString(extensionAdapter?.type) ?? "process",
+      adapterType: asString(extensionAdapter?.type) ?? "claude_local",
       adapterConfig,
       runtimeConfig,
       permissions: extensionPermissions ?? {},
@@ -3034,8 +3038,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     mode: ImportMode,
   ) {
     const effectiveAdapterType = assertKnownImportAdapterType(adapterType);
-    if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
-      throw forbidden(`Adapter type "${effectiveAdapterType}" is not allowed in safe imports`);
+    if (isDaasBlockedInfrastructureAdapterType(effectiveAdapterType)) {
+      throw forbidden(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
     }
     const nextAdapterConfig = writePaperclipSkillSyncPreference(
       applyImportAdapterRunDefaults(effectiveAdapterType, adapterConfig),
@@ -3052,6 +3056,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       nextAdapterConfig,
       { strictMode: strictSecretsMode },
     );
+    const blockedPaths = collectDaasDirectInfrastructureConfigPaths(
+      normalizedAdapterConfig,
+      "adapterConfig",
+    );
+    if (blockedPaths.length > 0) {
+      throw forbidden(`${DAAS_INFRASTRUCTURE_DENIAL_MESSAGE} Blocked config: ${blockedPaths.join(", ")}`);
+    }
     await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
     return {
       adapterType: effectiveAdapterType,
@@ -4556,6 +4567,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             desiredSkills,
             mode,
           );
+          const runtimeConfig = disableImportedTimerHeartbeat(manifestAgent.runtimeConfig);
+          const blockedRuntimePaths = collectDaasDirectInfrastructureConfigPaths(
+            runtimeConfig,
+            "runtimeConfig",
+          );
+          if (blockedRuntimePaths.length > 0) {
+            throw forbidden(`${DAAS_INFRASTRUCTURE_DENIAL_MESSAGE} Blocked config: ${blockedRuntimePaths.join(", ")}`);
+          }
           const patch = {
             name: planAgent.plannedName,
             role: manifestAgent.role,
@@ -4565,7 +4584,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
             adapterConfig: normalizedAdapter.adapterConfig,
-            runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+            runtimeConfig,
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,

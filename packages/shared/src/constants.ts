@@ -115,6 +115,24 @@ export const DAAS_DANGEROUS_INFRASTRUCTURE_ACTIONS = [
 ] as const;
 export type DaasDangerousInfrastructureAction = (typeof DAAS_DANGEROUS_INFRASTRUCTURE_ACTIONS)[number];
 
+export const DAAS_BLOCKED_INFRASTRUCTURE_ADAPTER_TYPES = [
+  "process",
+  "http",
+] as const;
+export type DaasBlockedInfrastructureAdapterType =
+  (typeof DAAS_BLOCKED_INFRASTRUCTURE_ADAPTER_TYPES)[number];
+
+export const DAAS_DANGEROUS_ADAPTER_CONFIG_KEYS = [
+  "dangerouslySkipPermissions",
+  "dangerouslyBypassSandbox",
+  "dangerouslyBypassApprovalsAndSandbox",
+] as const;
+export type DaasDangerousAdapterConfigKey =
+  (typeof DAAS_DANGEROUS_ADAPTER_CONFIG_KEYS)[number];
+
+export const DAAS_INFRASTRUCTURE_DENIAL_MESSAGE =
+  "Paperclip direct infrastructure access is disabled. Route SSH, raw shell, credential, secret, and provider-key actions through DAAS governed mission APIs.";
+
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 

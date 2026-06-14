@@ -1,9 +1,7 @@
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
-  ToggleField,
   DraftInput,
-  help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 
@@ -49,24 +47,6 @@ export function OpenCodeLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
-        label="Skip permissions"
-        hint={help.dangerouslySkipPermissions}
-        checked={
-          isCreate
-            ? values!.dangerouslySkipPermissions
-            : eff(
-                "adapterConfig",
-                "dangerouslySkipPermissions",
-                config.dangerouslySkipPermissions !== false,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslySkipPermissions: v })
-            : mark("adapterConfig", "dangerouslySkipPermissions", v)
-        }
-      />
     </>
   );
 }

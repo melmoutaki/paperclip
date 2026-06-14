@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { DAAS_INFRASTRUCTURE_DENIAL_MESSAGE } from "@paperclipai/shared";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -76,6 +77,36 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
 }));
 
+vi.mock("@paperclipai/db", () => ({
+  agents: {},
+  companies: { id: "companies.id" },
+  heartbeatRuns: {},
+  issues: {},
+  projects: {},
+}));
+
+vi.mock("@cursor/sdk", () => ({
+  Cursor: {
+    me: vi.fn(),
+    models: { list: vi.fn() },
+    agents: {
+      create: vi.fn(),
+      get: vi.fn(),
+    },
+    runs: {
+      create: vi.fn(),
+      get: vi.fn(),
+      list: vi.fn(),
+    },
+  },
+}));
+
+vi.mock("sqlite3", () => ({
+  default: {},
+  Database: vi.fn(),
+  verbose: vi.fn(() => ({ Database: vi.fn() })),
+}));
+
 vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
@@ -95,6 +126,36 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
+  }));
+
+  vi.doMock("@paperclipai/db", () => ({
+    agents: {},
+    companies: { id: "companies.id" },
+    heartbeatRuns: {},
+    issues: {},
+    projects: {},
+  }));
+
+  vi.doMock("@cursor/sdk", () => ({
+    Cursor: {
+      me: vi.fn(),
+      models: { list: vi.fn() },
+      agents: {
+        create: vi.fn(),
+        get: vi.fn(),
+      },
+      runs: {
+        create: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn(),
+      },
+    },
+  }));
+
+  vi.doMock("sqlite3", () => ({
+    default: {},
+    Database: vi.fn(),
+    verbose: vi.fn(() => ({ Database: vi.fn() })),
   }));
 
   vi.doMock("../services/instance-settings.js", () => ({
@@ -266,5 +327,89 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
+  });
+
+  it("denies direct process adapter creation through DAAS routing guard", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Process Agent",
+          adapterType: "process",
+          adapterConfig: { command: "ssh root@example.test" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("denies hand-crafted permission bypass adapter config", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Bypass Agent",
+          adapterType: "codex_local",
+          adapterConfig: { dangerouslyBypassApprovalsAndSandbox: true },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain("adapterConfig.dangerouslyBypassApprovalsAndSandbox");
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("denies SSH execution targets in runtime model profile config", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Remote Agent",
+          adapterType: "claude_local",
+          runtimeConfig: {
+            modelProfiles: {
+              cheap: {
+                adapterConfig: {
+                  executionTarget: { kind: "remote", transport: "ssh" },
+                },
+              },
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      "runtimeConfig.modelProfiles.cheap.adapterConfig.executionTarget",
+    );
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("denies switching an existing agent to a direct process adapter", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+    });
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType: "process" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 });

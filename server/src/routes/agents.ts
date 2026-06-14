@@ -8,6 +8,7 @@ import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  DAAS_INFRASTRUCTURE_DENIAL_MESSAGE,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -56,6 +57,10 @@ import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
+import {
+  collectDaasDirectInfrastructureConfigPaths,
+  isDaasBlockedInfrastructureAdapterType,
+} from "../services/daas-infrastructure-guard.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
@@ -87,7 +92,6 @@ import {
   DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
 } from "@paperclipai/adapter-acpx-local";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
@@ -1012,9 +1016,13 @@ export function agentRoutes(
     return entries;
   }
 
-  function assertNoAgentRuntimeConfigAdapterConfigMutation(req: Request, runtimeConfig: unknown) {
+  function assertNoAgentRuntimeConfigAdapterConfigMutation(
+    req: Request,
+    runtimeConfig: unknown,
+    adapterType?: string,
+  ) {
     for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
-      assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
+      assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path, adapterType);
     }
   }
 
@@ -1115,7 +1123,7 @@ export function agentRoutes(
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
         typeof next.dangerouslyBypassSandbox === "boolean";
       if (!hasBypassFlag) {
-        next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+        next.dangerouslyBypassApprovalsAndSandbox = false;
       }
       return ensureGatewayDeviceKey(adapterType, next);
     }
@@ -1257,12 +1265,27 @@ export function agentRoutes(
     req: Request,
     adapterConfig: Record<string, unknown>,
     path = "adapterConfig",
+    adapterType?: string,
   ) {
+    assertNoDaasDirectInfrastructureMutation(adapterType, adapterConfig, path);
     assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectAgentAdapterWorkspaceCommandPaths(adapterConfig, path),
     );
+  }
+
+  function assertNoDaasDirectInfrastructureMutation(
+    adapterType: string | undefined,
+    adapterConfig: Record<string, unknown>,
+    path: string,
+  ) {
+    if (isDaasBlockedInfrastructureAdapterType(adapterType)) {
+      throw forbidden(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    }
+    const blockedPaths = collectDaasDirectInfrastructureConfigPaths(adapterConfig, path);
+    if (blockedPaths.length === 0) return;
+    throw forbidden(`${DAAS_INFRASTRUCTURE_DENIAL_MESSAGE} Blocked config: ${blockedPaths.join(", ")}`);
   }
 
   function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
@@ -2113,8 +2136,8 @@ export function agentRoutes(
       hireInput.adapterType,
       rawHireAdapterConfig,
     );
-    assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
-    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig, "adapterConfig", hireInput.adapterType);
+    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig, hireInput.adapterType);
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
       rawHireAdapterConfig,
@@ -2299,8 +2322,8 @@ export function agentRoutes(
       createInput.adapterType,
       rawCreateAdapterConfig,
     );
-    assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
-    assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig, "adapterConfig", createInput.adapterType);
+    assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig, createInput.adapterType);
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -2709,13 +2732,19 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    const requestedAdapterType = hasOwn(patchData, "adapterType")
+      ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
+      : existing.adapterType;
+    if (hasOwn(patchData, "adapterType") && isDaasBlockedInfrastructureAdapterType(requestedAdapterType)) {
+      throw forbidden(DAAS_INFRASTRUCTURE_DENIAL_MESSAGE);
+    }
     if (hasOwn(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      assertNoAgentAdapterConfigMutation(req, adapterConfig);
+      assertNoAgentAdapterConfigMutation(req, adapterConfig, "adapterConfig", requestedAdapterType);
       const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(adapterConfig);
       if (changingInstructionsConfig) {
         await assertCanManageInstructionsPath(req, existing);
@@ -2723,9 +2752,6 @@ export function agentRoutes(
       patchData.adapterConfig = adapterConfig;
     }
 
-    const requestedAdapterType = hasOwn(patchData, "adapterType")
-      ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
-      : existing.adapterType;
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
@@ -2733,7 +2759,7 @@ export function agentRoutes(
         res.status(422).json({ error: "runtimeConfig must be an object" });
         return;
       }
-      assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
+      assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig, requestedAdapterType);
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
