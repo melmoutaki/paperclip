@@ -9,14 +9,25 @@ import {
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, type LowTrustBoundary } from "@paperclipai/shared";
+import type {
+  DaasAgentOpsCapability,
+  DaasDangerousInfrastructureAction,
+  PermissionKey,
+  PrincipalType,
+} from "@paperclipai/shared";
+import {
+  DAAS_AGENTOPS_CAPABILITIES,
+  DAAS_DANGEROUS_INFRASTRUCTURE_ACTIONS,
+  LOW_TRUST_REVIEW_PRESET,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
   resolveCoreTrustPreset,
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
+import { defaultDaasCapabilitiesForRole } from "./agent-permissions.js";
 
 export type AuthorizationActor =
   {
@@ -40,6 +51,7 @@ export type AuthorizationActor =
 
 export type AuthorizationAction =
   | PermissionKey
+  | DaasDangerousInfrastructureAction
   | "agent_config:read"
   | "agent_config:update"
   | "agent:read"
@@ -76,6 +88,7 @@ export type AuthorizationDecision = {
     | "allow_instance_admin"
     | "allow_explicit_grant"
     | "allow_legacy_agent_creator"
+    | "allow_daas_agentops_capability"
     | "allow_self"
     | "allow_company_agent"
     | "allow_simple_company_member"
@@ -85,6 +98,7 @@ export type AuthorizationDecision = {
     | "deny_missing_membership"
     | "deny_missing_grant"
     | "deny_policy_restricted"
+    | "deny_daas_direct_infrastructure"
     | "deny_low_trust_boundary"
     | "deny_scope"
     | "deny_unsupported_action";
@@ -105,6 +119,8 @@ function companyIdForResource(resource: AuthorizationResource) {
 }
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
+  if (isDaasCapability(action)) return action;
+  if (isDaasDangerousInfrastructureAction(action)) return null;
   if (action === "agent_config:read" || action === "agent_config:update") return "agents:create";
   if (
     action === "agent:read" ||
@@ -119,6 +135,29 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   }
   if (action === "issue:mutate") return null;
   return action;
+}
+
+const daasCapabilities = new Set<string>(DAAS_AGENTOPS_CAPABILITIES);
+const daasDangerousInfrastructureActions = new Set<string>(DAAS_DANGEROUS_INFRASTRUCTURE_ACTIONS);
+
+function isDaasCapability(action: AuthorizationAction): action is DaasAgentOpsCapability {
+  return daasCapabilities.has(action);
+}
+
+function isDaasDangerousInfrastructureAction(
+  action: AuthorizationAction,
+): action is DaasDangerousInfrastructureAction {
+  return daasDangerousInfrastructureActions.has(action);
+}
+
+function daasCapabilitiesForAgent(agent: { role: string; permissions: unknown }) {
+  const fromRole = defaultDaasCapabilitiesForRole(agent.role);
+  const fromPermissions = isPlainRecord(agent.permissions) && Array.isArray(agent.permissions.daasCapabilities)
+    ? agent.permissions.daasCapabilities.filter((entry): entry is DaasAgentOpsCapability =>
+      typeof entry === "string" && daasCapabilities.has(entry),
+    )
+    : [];
+  return new Set<DaasAgentOpsCapability>([...fromRole, ...fromPermissions]);
 }
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
@@ -858,6 +897,14 @@ export function authorizationService(db: Db) {
     const permissionKey = permissionForAction(input.action);
     const companyId = companyIdForResource(input.resource);
 
+    if (isDaasDangerousInfrastructureAction(input.action)) {
+      return deny({
+        action: input.action,
+        reason: "deny_daas_direct_infrastructure",
+        explanation: `${input.action} is denied. Paperclip agents must request infrastructure work through DAAS governed mission APIs.`,
+      });
+    }
+
     async function decideWithTaskAssignmentGrants(
       principalType: PrincipalType,
       principalId: string,
@@ -1003,6 +1050,14 @@ export function authorizationService(db: Db) {
         action: input.action,
         reason: "deny_company_boundary",
         explanation: "Actor agent was not found in the target company.",
+      });
+    }
+
+    if (isDaasCapability(input.action) && daasCapabilitiesForAgent(actorAgent).has(input.action)) {
+      return allow({
+        action: input.action,
+        reason: "allow_daas_agentops_capability",
+        explanation: `Allowed by DAAS AgentOps capability ${input.action}.`,
       });
     }
 

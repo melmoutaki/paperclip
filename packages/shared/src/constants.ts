@@ -55,6 +55,12 @@ export const AGENT_ROLES = [
   "devops",
   "researcher",
   "general",
+  "daas_cto_agent",
+  "daas_infra_planner",
+  "daas_security_reviewer",
+  "daas_evidence_auditor",
+  "daas_cost_controller",
+  "daas_operator",
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
@@ -71,7 +77,43 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   devops: "DevOps",
   researcher: "Researcher",
   general: "General",
+  daas_cto_agent: "CTO Agent",
+  daas_infra_planner: "Infra Planner",
+  daas_security_reviewer: "Security Reviewer",
+  daas_evidence_auditor: "Evidence Auditor",
+  daas_cost_controller: "Cost Controller",
+  daas_operator: "Operator",
 };
+
+export const DAAS_AGENTOPS_ROLES = [
+  "daas_cto_agent",
+  "daas_infra_planner",
+  "daas_security_reviewer",
+  "daas_evidence_auditor",
+  "daas_cost_controller",
+  "daas_operator",
+] as const;
+export type DaasAgentOpsRole = (typeof DAAS_AGENTOPS_ROLES)[number];
+
+export const DAAS_AGENTOPS_CAPABILITIES = [
+  "daas.mission.create",
+  "daas.mission.read",
+  "daas.evidence.read",
+  "daas.webhook.receive",
+  "daas.budget.read",
+  "daas.ticket.update",
+  "daas.approval.propose",
+] as const;
+export type DaasAgentOpsCapability = (typeof DAAS_AGENTOPS_CAPABILITIES)[number];
+
+export const DAAS_DANGEROUS_INFRASTRUCTURE_ACTIONS = [
+  "ssh.open",
+  "shell.execute",
+  "credential.read",
+  "secret.read",
+  "provider_key.read",
+] as const;
+export type DaasDangerousInfrastructureAction = (typeof DAAS_DANGEROUS_INFRASTRUCTURE_ACTIONS)[number];
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
@@ -730,6 +772,7 @@ export const PERMISSION_KEYS = [
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
   "joins:approve",
+  ...DAAS_AGENTOPS_CAPABILITIES,
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
@@ -815,6 +858,8 @@ export const PLUGIN_CAPABILITIES = [
   "authorization.policies.read",
   "authorization.audit.read",
   "database.namespace.read",
+  // DAAS AgentOps adapter capabilities
+  ...DAAS_AGENTOPS_CAPABILITIES,
   // Data Write
   "issues.create",
   "issues.update",

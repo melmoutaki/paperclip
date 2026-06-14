@@ -94,7 +94,7 @@ async function grantAgentPermission(
   db: ReturnType<typeof createDb>,
   companyId: string,
   agentId: string,
-  permissionKey: "tasks:assign" | "tasks:assign_scope",
+  permissionKey: "tasks:assign" | "tasks:assign_scope" | "daas.mission.create" | "daas.evidence.read",
   scope: Record<string, unknown> | null = null,
 ) {
   await db.insert(companyMemberships).values({
@@ -246,6 +246,114 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_simple_company_member",
     });
     expect(decision.explanation).toContain("simple mode");
+  });
+
+  it("allows DAAS AgentOps roles to use only their DAAS capability defaults", async () => {
+    const company = await createCompany(db, "DaasAgentOpsDefaults");
+    const actorAgent = await createAgent(db, company.id, { role: "daas_infra_planner" });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "daas.mission.create",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_daas_agentops_capability",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "daas.evidence.read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("allows explicitly scoped DAAS capabilities while denying direct infrastructure actions", async () => {
+    const company = await createCompany(db, "DaasExplicitCapabilities");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        daasCapabilities: ["daas.mission.create", "daas.evidence.read", "ssh.open"],
+      },
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "daas.mission.create",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_daas_agentops_capability",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "daas.evidence.read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_daas_agentops_capability",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "ssh.open",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_daas_direct_infrastructure",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "shell.execute",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_daas_direct_infrastructure",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "credential.read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_daas_direct_infrastructure",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "secret.read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_daas_direct_infrastructure",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "provider_key.read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_daas_direct_infrastructure",
+    });
+  });
+
+  it("denies dangerous DAAS infrastructure actions before legacy board bypasses", async () => {
+    const company = await createCompany(db, "DaasBoardBypassDeny");
+
+    await expect(authorizationService(db).decide({
+      actor: { type: "board", userId: "local", source: "local_implicit" },
+      action: "provider_key.read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_daas_direct_infrastructure",
+    });
   });
 
   it("limits low-trust issue reads to the configured project and root issue boundary", async () => {

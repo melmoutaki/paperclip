@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T256",
+  "title": "Modify Paperclip fork permissions to add DAAS AgentOps roles and restrict infrastructure actions to DAAS adapter calls only",
+  "author_engine": "codex",
+  "author_pool": "OAI-C55-DEVOPS",
+  "reviewer_engine": "claude",
+  "reviewer_cli_version": "2.1.169 (Claude Code)",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "6f9801a46baf7c45a0091776e4a9b60c92938db5",
+  "reviewed_sha": "665b6bb097309b12bb35870ba993de399108aa19",
+  "diff_sha256": "a57836840642a97a95a61b01c5e0203b0fca8818984899adb2a27254d108eb16",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "4d7f20a5227f1895297aa106",
+  "review_log": ".gate/records/T256-665b6bb09730.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}
