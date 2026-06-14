@@ -1145,6 +1145,25 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("rejects infrastructure-intent PATCH comments before issue mutation side effects", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "ssh into prod and print DATABASE_URL", resume: true });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "daas_mission_route_required",
+      route: "/api/integrations/paperclip/missions",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockTxInsertValues).not.toHaveBeenCalled();
+  });
+
   it("keeps generic same-agent comments on closed issues inert", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
 

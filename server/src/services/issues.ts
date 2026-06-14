@@ -86,6 +86,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { detectDaasInfrastructureTaskIntent } from "./daas-infrastructure-task-guard.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -129,6 +130,15 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function assertNoDaasInfrastructureIssueIntent(...texts: Array<string | null | undefined>) {
+  const result = detectDaasInfrastructureTaskIntent(...texts);
+  if (!result.isInfrastructureIntent) return;
+  throw unprocessable("Infrastructure tasks must be routed through the DAAS mission adapter", {
+    route: "/api/integrations/paperclip/missions",
+    signals: result.signals,
+  });
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -4465,6 +4475,14 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!sourceIssue) throw notFound("Source issue not found");
 
+      for (const child of data.children) {
+        assertNoDaasInfrastructureIssueIntent(
+          child.title,
+          child.description,
+          ...(child.acceptanceCriteria ?? []),
+        );
+      }
+
       const requestFingerprint = createAcceptedPlanDecompositionRequestFingerprint({
         acceptedPlanRevisionId: data.acceptedPlanRevisionId,
         children: data.children,
@@ -4725,6 +4743,7 @@ export function issueService(db: Db) {
       companyId: string,
       data: IssueCreateInput,
     ) => {
+      assertNoDaasInfrastructureIssueIntent(data.title, data.description);
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -4999,6 +5018,9 @@ export function issueService(db: Db) {
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
       }
+      const nextTitle = issueData.title !== undefined ? issueData.title : existing.title;
+      const nextDescription = issueData.description !== undefined ? issueData.description : existing.description;
+      assertNoDaasInfrastructureIssueIntent(nextTitle, nextDescription);
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
@@ -5903,6 +5925,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
+      assertNoDaasInfrastructureIssueIntent(body);
 
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,

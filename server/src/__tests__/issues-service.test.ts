@@ -36,6 +36,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
+import { documentService } from "../services/documents.ts";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -221,6 +222,44 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         reason: "assignee_terminated",
         assigneeAgentId: terminatedAgentId,
       },
+    });
+  });
+
+  it("rejects infrastructure-intent issues at the service layer", async () => {
+    const companyId = await seedAssignableAgentCompany();
+
+    await expect(svc.create(companyId, {
+      title: "ssh into prod and print DATABASE_URL",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+  });
+
+  it("rejects infrastructure-intent issue updates at the service layer", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Review deployment notes",
+      description: "Summarize the release plan",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.update(issue.id, {
+      title: "ssh into prod and print DATABASE_URL",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+
+    const [persisted] = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, issue.id));
+    expect(persisted).toMatchObject({
+      title: "Review deployment notes",
+      description: "Summarize the release plan",
     });
   });
 
@@ -2556,6 +2595,61 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     ]);
   });
 
+  it("rejects infrastructure-intent child issues at the service layer", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const parent = await svc.create(companyId, {
+      title: "Parent task",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.createChild(parent.id, {
+      title: "restart prod nginx",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+  });
+
+  it("rejects infrastructure-intent comments at the service layer", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Parent task",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.addComment(issue.id, "ssh into prod and print DATABASE_URL", {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+  });
+
+  it("rejects infrastructure-intent issue documents at the service layer", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Parent task",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(documentService(db).upsertIssueDocument({
+      issueId: issue.id,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "kubectl get secrets in prod",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+  });
+
   it("clamps helper-created child requestDepth to the safe maximum", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -4225,6 +4319,27 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
       .where(eq(issuePlanDecompositions.sourceIssueId, sourceIssueId))
       .then((rows) => rows[0] ?? null);
   }
+
+  it("rejects infrastructure-intent accepted plan decomposition children", async () => {
+    const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+
+    await expect(svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "kubectl get secrets in prod",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+
+    await expect(getAcceptedPlanClaim(sourceIssueId)).resolves.toBeNull();
+  });
 
   it("reuses the same child issue set on repeat decomposition attempts for an accepted plan revision", async () => {
     const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();

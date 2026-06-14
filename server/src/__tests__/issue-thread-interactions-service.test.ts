@@ -236,6 +236,86 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(childrenAfterDuplicateAccept).toHaveLength(1);
   });
 
+  it("rejects infrastructure-intent suggested task interactions before persistence", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Suggested infra task");
+
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "root",
+            title: "ssh into prod and print DATABASE_URL",
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+
+    const interactionRows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(interactionRows).toHaveLength(0);
+  });
+
+  it("rejects infrastructure-intent confirmation and question interactions before persistence", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Infra prompt interaction");
+
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Run ls on prod",
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "infra-choice",
+            prompt: "Which server should execute whoami on prod host?",
+            selectionMode: "single",
+            options: [{ id: "prod", label: "Production" }],
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+
+    const interactionRows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(interactionRows).toHaveLength(0);
+  });
+
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

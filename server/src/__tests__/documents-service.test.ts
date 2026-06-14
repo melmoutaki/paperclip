@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   companies,
@@ -192,5 +193,40 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       body: "# Agent replacement plan",
       lockedAt: null,
     }));
+  });
+
+  it("rejects restoring an infrastructure-intent document revision", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Updated safe plan",
+    });
+    const originalRevisionId = await db
+      .select({ id: documentRevisions.id })
+      .from(documentRevisions)
+      .where(eq(documentRevisions.revisionNumber, 1))
+      .then((rows) => rows[0]?.id);
+    expect(originalRevisionId).toBeTruthy();
+
+    await db
+      .update(documentRevisions)
+      .set({ body: "ssh into prod and print DATABASE_URL" })
+      .where(eq(documentRevisions.id, originalRevisionId!));
+
+    await expect(svc.restoreIssueDocumentRevision({
+      issueId,
+      key: "plan",
+      revisionId: originalRevisionId!,
+      createdByUserId: "board-user",
+    })).rejects.toMatchObject({
+      status: 422,
+    });
+
+    const current = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(current?.latestRevisionId).toBe(updated.document.latestRevisionId);
+    expect(current?.body).toBe("# Updated safe plan");
   });
 });

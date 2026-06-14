@@ -76,6 +76,23 @@ import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { sanitizeRecord } from "../redaction.js";
 
+const SAFE_PLUGIN_ISSUE_UPDATE_ACTIVITY_FIELDS = new Set([
+  "status",
+  "priority",
+  "assigneeAgentId",
+  "assigneeUserId",
+  "labelIds",
+  "blockedByIssueIds",
+  "projectId",
+  "projectWorkspaceId",
+  "executionWorkspaceId",
+  "executionWorkspacePreference",
+  "requestDepth",
+  "originKind",
+  "originId",
+  "billingCode",
+]);
+
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
 // ---------------------------------------------------------------------------
@@ -1591,7 +1608,8 @@ export function buildHostServices(
           actor: { actorAgentId, actorUserId, actorRunId },
           details: {
             identifier: updated.identifier,
-            patch,
+            changedFields: Object.keys(patch).filter((key) => SAFE_PLUGIN_ISSUE_UPDATE_ACTIVITY_FIELDS.has(key)),
+            redactedFieldCount: Object.keys(patch).filter((key) => !SAFE_PLUGIN_ISSUE_UPDATE_ACTIVITY_FIELDS.has(key)).length,
             _previous: {
               status: existing.status,
               assigneeAgentId: existing.assigneeAgentId,

@@ -21,6 +21,7 @@ import {
   UpdateDocumentAnnotationThread,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { detectDaasInfrastructureTaskIntent } from "./daas-infrastructure-task-guard.js";
 
 type ActorInput = {
   actorType: "agent" | "user";
@@ -39,6 +40,15 @@ type IssueDocumentRow = {
   latestRevisionId: string | null;
   latestRevisionNumber: number;
 };
+
+function assertNoDaasInfrastructureAnnotationIntent(body: string) {
+  const result = detectDaasInfrastructureTaskIntent(body);
+  if (!result.isInfrastructureIntent) return;
+  throw unprocessable("Infrastructure annotation content must be routed through the DAAS mission adapter", {
+    route: "/api/integrations/paperclip/missions",
+    signals: result.signals,
+  });
+}
 
 const threadSelect = {
   id: documentAnnotationThreads.id,
@@ -210,6 +220,7 @@ export function documentAnnotationService(db: Db) {
       input: CreateDocumentAnnotationThread,
       actor: ActorInput,
     ) => db.transaction(async (tx) => {
+      assertNoDaasInfrastructureAnnotationIntent(input.body);
       await tx.execute(sql`
         select ${documents.id}
         from ${issueDocuments}
@@ -298,6 +309,7 @@ export function documentAnnotationService(db: Db) {
       input: CreateDocumentAnnotationComment,
       actor: ActorInput,
     ) => db.transaction(async (tx) => {
+      assertNoDaasInfrastructureAnnotationIntent(input.body);
       const thread = await getThreadForIssue(issueId, key, threadId, tx);
       if (!thread) throw notFound("Annotation thread not found");
       const now = new Date();

@@ -39,6 +39,7 @@ import {
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { detectDaasInfrastructureTaskIntent } from "./daas-infrastructure-task-guard.js";
 import { issueService, listUnfinalizedExecutionWorkspaceIds } from "./issues.js";
 
 type InteractionActor = {
@@ -110,6 +111,36 @@ function isEquivalentCreateRequest(
     && (row.createdByUserId ?? null) === (actor.userId ?? null)
     && isDeepStrictEqual(row.payload, input.payload)
   );
+}
+
+function collectStringLeaves(value: unknown, texts: string[] = []): string[] {
+  if (typeof value === "string") {
+    if (value.trim().length > 0) texts.push(value);
+    return texts;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectStringLeaves(item, texts);
+    return texts;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      collectStringLeaves(item, texts);
+    }
+  }
+  return texts;
+}
+
+function assertNoDaasInfrastructureInteractionIntent(input: CreateIssueThreadInteraction) {
+  const result = detectDaasInfrastructureTaskIntent(
+    input.title,
+    input.summary,
+    ...collectStringLeaves(input.payload),
+  );
+  if (!result.isInfrastructureIntent) return;
+  throw unprocessable("Infrastructure tasks must be routed through the DAAS mission adapter", {
+    route: "/api/integrations/paperclip/missions",
+    signals: result.signals,
+  });
 }
 
 function hydrateInteraction(
@@ -761,6 +792,7 @@ export function issueThreadInteractionService(db: Db) {
       actor: InteractionActor,
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
+      assertNoDaasInfrastructureInteractionIntent(data);
 
       if (data.idempotencyKey) {
         const existing = await getIdempotentInteraction({

@@ -133,6 +133,27 @@ export type DaasDangerousAdapterConfigKey =
 export const DAAS_INFRASTRUCTURE_DENIAL_MESSAGE =
   "Paperclip direct infrastructure access is disabled. Route SSH, raw shell, credential, secret, and provider-key actions through DAAS governed mission APIs.";
 
+/**
+ * The single governed route through which infrastructure-intent task work must
+ * be dispatched. Any infra-intent task that reaches the central dispatch guard
+ * without having been routed through this DAAS adapter mission API is denied.
+ */
+export const DAAS_PAPERCLIP_MISSIONS_ROUTE = "/api/integrations/paperclip/missions";
+
+/**
+ * Context-snapshot provenance key set ONLY by the DAAS adapter mission route.
+ * The value must be a server-minted object that includes the mission route and
+ * mission id; a generic truthy flag is never accepted as governed routing.
+ */
+export const DAAS_MISSION_ROUTE_CONTEXT_KEY = "daasMissionRouted";
+export const DAAS_MISSION_ID_CONTEXT_KEY = "daasMissionId";
+
+export const DAAS_INFRASTRUCTURE_TASK_DENIAL_MESSAGE =
+  "Paperclip cannot execute infrastructure tasks directly. Route SSH, raw shell, credential, secret, and provider-key work through the DAAS governed mission API (POST /api/integrations/paperclip/missions).";
+
+export const DAAS_INFRASTRUCTURE_TASK_ADAPTER_UNAVAILABLE_MESSAGE =
+  "Paperclip blocked an infrastructure task fail-closed: the DAAS mission adapter is unavailable. Non-infrastructure work may continue; infrastructure work must wait for the DAAS governed mission API.";
+
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
