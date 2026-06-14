@@ -16,14 +16,25 @@ export interface FeedbackTraceShareClient {
 }
 
 export function createFeedbackTraceShareClientFromConfig(
-  config: Pick<Config, "feedbackExportBackendUrl" | "feedbackExportBackendToken">,
+  config: Pick<
+    Config,
+    "feedbackExportBackendUrl" | "feedbackExportBackendToken" | "feedbackSharingEnabled"
+  >,
 ): FeedbackTraceShareClient {
   const baseUrl = config.feedbackExportBackendUrl?.trim() || DEFAULT_FEEDBACK_EXPORT_BACKEND_URL;
   const token = config.feedbackExportBackendToken?.trim();
   const endpoint = new URL("/feedback-traces", baseUrl).toString();
+  // DAAS fork: feedback-trace sharing is a non-required outbound integration and
+  // is OFF by default. Fail closed (no silent upload) unless explicitly enabled.
+  const sharingEnabled = config.feedbackSharingEnabled === true;
 
   return {
     async uploadTraceBundle(bundle) {
+      if (!sharingEnabled) {
+        throw new Error(
+          "Feedback trace sharing is disabled by fork policy. Set PAPERCLIP_FEEDBACK_SHARING_ENABLED=1 to allow outbound feedback uploads.",
+        );
+      }
       const exportedAt = new Date();
       const objectKey = buildFeedbackShareObjectKey(bundle, exportedAt);
       const requestBody = JSON.stringify({

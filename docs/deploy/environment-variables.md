@@ -52,3 +52,23 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter) |
+
+## Telemetry & Outbound Network (DAAS fork)
+
+In the DAAS fork, telemetry and feedback-trace sharing are **disabled by default**.
+A default install emits no telemetry and no non-required outbound traffic. See
+[Outbound Network](/deploy/outbound-network) for the complete connector catalog.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPERCLIP_TELEMETRY_ENABLED` | (unset → off) | Set to `1` to opt in to anonymous product telemetry. |
+| `PAPERCLIP_TELEMETRY_DISABLED` | (unset) | Set to `1` to hard-disable telemetry even if opted in elsewhere. |
+| `DO_NOT_TRACK` | (unset) | Standard kill switch; `1` forces telemetry off. |
+| `PAPERCLIP_TELEMETRY_ENDPOINT` | (built-in) | Override the telemetry ingest endpoint (only used when telemetry is enabled). |
+| `PAPERCLIP_ENTERPRISE_TELEMETRY_POLICY` | (unset) | When set to an enforce value (e.g. `enforce_disabled`), enabling telemetry **fails closed** — the server refuses to start. Use `allow` to permit opt-in. |
+| `PAPERCLIP_FEEDBACK_SHARING_ENABLED` | (unset → off) | Set to `1` to allow outbound feedback-trace uploads. When off, uploads fail closed. |
+| `PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL` | (built-in) | Override the feedback-trace backend URL (only used when sharing is enabled). |
+| `PAPERCLIP_FEEDBACK_EXPORT_BACKEND_TOKEN` | (unset) | Bearer token for the feedback-trace backend. Provide via a secret ref, never commit it. |
+
+Telemetry is also forced off automatically in CI environments (`CI`,
+`GITHUB_ACTIONS`, etc.).

@@ -99,8 +99,9 @@ export const secretsConfigSchema = z.object({
   }),
 });
 
+// DAAS fork: telemetry is disabled by default and must be explicitly opted in.
 export const telemetryConfigSchema = z.object({
-  enabled: z.boolean().default(true),
+  enabled: z.boolean().default(false),
 }).default({});
 
 export const paperclipConfigSchema = z

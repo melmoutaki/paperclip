@@ -19,7 +19,9 @@ Each vote creates two local records:
 
 All data lives in your local Paperclip database. Nothing leaves your machine unless you explicitly choose to share.
 
-When a vote is marked for sharing, Paperclip immediately tries to upload the trace bundle through the Telemetry Backend. The upload is compressed in transit so full trace bundles stay under gateway size limits. If that immediate push fails, the trace is left in a retriable failed state for later flush attempts. The app server never uploads raw feedback trace bundles directly to object storage.
+When a vote is marked for sharing, Paperclip tries to upload the trace bundle through the Telemetry Backend. The upload is compressed in transit so full trace bundles stay under gateway size limits. If that push fails, the trace is left in a retriable failed state for later flush attempts. The app server never uploads raw feedback trace bundles directly to object storage.
+
+> **DAAS fork — sharing is off by default.** Outbound feedback-trace sharing is a non-required outbound integration and is disabled by default. Even when you mark a vote for sharing, the upload **fails closed** (no data leaves your machine) unless an operator has set `PAPERCLIP_FEEDBACK_SHARING_ENABLED=1`. The vote and trace bundle still persist locally so nothing is lost. See [Outbound Network](/deploy/outbound-network) for the full outbound connector policy.
 
 ## Viewing your votes
 
