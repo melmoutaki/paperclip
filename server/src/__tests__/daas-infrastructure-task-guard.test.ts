@@ -203,8 +203,35 @@ describe("detectDaasInfrastructureTaskIntent", () => {
     expect(detectDaasInfrastructureTaskIntent("restart prod nginx").signals).toContain(
       "infra.orchestration",
     );
-    expect(detectDaasInfrastructureTaskIntent("Restart nginx in production").signals).toContain(
+	    expect(detectDaasInfrastructureTaskIntent("Restart nginx in production").signals).toContain(
+	      "infra.orchestration",
+	    );
+	    expect(detectDaasInfrastructureTaskIntent("Restart postgres").signals).toContain(
+	      "infra.orchestration",
+	    );
+	    expect(detectDaasInfrastructureTaskIntent("Reboot web-01").signals).toContain(
+	      "infra.orchestration",
+	    );
+	    expect(detectDaasInfrastructureTaskIntent("Run migration").signals).toContain(
+	      "infra.orchestration",
+	    );
+	    expect(detectDaasInfrastructureTaskIntent("Rotate TLS certificate").signals).toContain(
+	      "infra.orchestration",
+	    );
+	    expect(detectDaasInfrastructureTaskIntent("restart nginx on 10.0.0.5").signals).toContain(
+	      "infra.orchestration",
+	    );
+    expect(detectDaasInfrastructureTaskIntent("reload redis on app-01.internal").signals).toContain(
       "infra.orchestration",
+    );
+    expect(detectDaasInfrastructureTaskIntent("restart service on 10.0.0.0/24").signals).toContain(
+      "infra.orchestration",
+    );
+    expect(detectDaasInfrastructureTaskIntent("run uptime on 10.0.0.5").signals).toContain(
+      "shell.execute",
+    );
+    expect(detectDaasInfrastructureTaskIntent("tail logs from api.internal.example").signals).toContain(
+      "shell.execute",
     );
     expect(detectDaasInfrastructureTaskIntent("Restart the server").signals).toContain(
       "infra.orchestration",
@@ -238,6 +265,7 @@ describe("detectDaasInfrastructureTaskIntent", () => {
       "Fix the pagination bug on the dashboard",
       "Refactor the issue list component",
       "Add unit tests for the pricing calculator",
+      "Document why example 10.0.0.5 appears in setup screenshots",
     ]) {
       expect(detectDaasInfrastructureTaskIntent(text).isInfrastructureIntent).toBe(false);
     }
@@ -330,9 +358,13 @@ describe("guardDaasInfrastructureTaskDispatch", () => {
       "log into server and tail logs",
       "run command on remote machine",
       "access VM and restart nginx",
-      "Read env vars from production",
-      "Restart nginx in production",
-      "Restart the server",
+	      "Read env vars from production",
+	      "Restart nginx in production",
+	      "Restart postgres",
+	      "Reboot web-01",
+	      "Run migration",
+	      "Rotate TLS certificate",
+	      "Restart the server",
       "Get the production database password",
       "Retrieve the production database password",
       "tail production logs",
@@ -347,6 +379,11 @@ describe("guardDaasInfrastructureTaskDispatch", () => {
       "Run the production database migration",
       "Backup the staging database",
       "Restore the production backup",
+      "restart nginx on 10.0.0.5",
+      "reload redis on app-01.internal",
+      "restart service on 10.0.0.0/24",
+      "run uptime on 10.0.0.5",
+      "tail logs from api.internal.example",
     ]) {
       expect(guardDaasInfrastructureTaskDispatch({ title })).toMatchObject({
         allowed: false,

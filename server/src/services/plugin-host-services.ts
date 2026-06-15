@@ -1550,7 +1550,17 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const {
+          actorAgentId,
+          actorUserId,
+          actorRunId,
+          originKind,
+          surfaceVisibility,
+          daasInfrastructureRoutingVerified: _daasInfrastructureRoutingVerified,
+          ...issueInput
+        } = params as typeof params & { daasInfrastructureRoutingVerified?: unknown };
+        // Plugins cannot prove DAAS mission routing; infra intent must be
+        // rejected by the shared issue service unless a server route verifies it.
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
@@ -1592,6 +1602,9 @@ export function buildHostServices(
         delete patch.actorAgentId;
         delete patch.actorUserId;
         delete patch.actorRunId;
+        // Plugins are outside the DAAS mission adapter route boundary; the shared
+        // issue service must reject infra intent rather than trust plugin input.
+        delete patch.daasInfrastructureRoutingVerified;
         if (patch.originKind !== undefined) {
           patch.originKind = normalizePluginOriginKind(patch.originKind);
         }

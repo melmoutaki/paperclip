@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T269",
+  "title": "Modify Paperclip fork ticket workflow so infrastructure tickets call DAAS mission adapter instead of any internal execution path",
+  "author_engine": "claude",
+  "author_pool": "CLAUDE-O48-PC",
+  "reviewer_engine": "codex",
+  "reviewer_cli_version": "codex-cli 0.138.0",
+  "base_ref": "origin/master",
+  "base_sha": "6f9801a46baf7c45a0091776e4a9b60c92938db5",
+  "reviewed_sha": "17011b6e447b0796ff4bad5c71d2bcee6e3368f2",
+  "diff_sha256": "c71e82306ed575171451b490c4135ac90655c2740218b82282e065e9eb0a34c7",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "836823b75c960c39b97a2614",
+  "review_log": ".gate/records/T269-17011b6e447b.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}

@@ -241,6 +241,14 @@ describe("resolveDaasMissionHandoffUrl", () => {
 
     process.env["DAAS_BASE_URL"] = "http://localhost:8000";
     expect(resolveDaasMissionHandoffUrl()?.toString()).toBe("http://localhost:8000/api/missions");
+
+    process.env["DAAS_BASE_URL"] = "http://host.docker.internal:8000";
+    expect(resolveDaasMissionHandoffUrl()?.toString()).toBe(
+      "http://host.docker.internal:8000/api/missions",
+    );
+
+    process.env["DAAS_BASE_URL"] = "http://daas-api:8000";
+    expect(resolveDaasMissionHandoffUrl()?.toString()).toBe("http://daas-api:8000/api/missions");
   });
 
   it("rejects unsafe or malformed DAAS origins", () => {
@@ -275,7 +283,7 @@ describe("POST /api/integrations/paperclip/missions", () => {
     }
   });
 
-  it("hands valid infrastructure missions to DAAS without creating a Paperclip run", async () => {
+	  it("hands valid infrastructure missions to DAAS without creating a Paperclip run", async () => {
     process.env["PAPERCLIP_WEBHOOK_SECRET"] = "inbound-route-secret";
     process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
     process.env["DAAS_BASE_URL"] = "https://daas.example.test";
@@ -305,12 +313,90 @@ describe("POST /api/integrations/paperclip/missions", () => {
       executionAuthority: "daas",
       paperclipRunId: null,
     });
-    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
-      action: "daas.mission_handoff.accepted",
-    }));
-  });
+	    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+	      action: "daas.mission_handoff.accepted",
+	    }));
+	  });
 
-  it("rejects missing or invalid route secrets", async () => {
+	  it("surfaces DAAS policy statuses on failed wrapper responses", async () => {
+	    process.env["PAPERCLIP_WEBHOOK_SECRET"] = "inbound-route-secret";
+	    process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
+	    process.env["DAAS_BASE_URL"] = "https://daas.example.test";
+	    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+	      ok: false,
+	      data: {
+	        daas_mission_id: "daas-mission-1",
+	        status: "blocked_by_policy",
+	      },
+	    }), {
+	      status: 403,
+	      headers: { "content-type": "application/json" },
+	    })));
+	    const { app, insertValues } = createMissionRouteApp();
+
+	    const response = await withLocalRequest(app, (client) => client
+	      .post("/api/integrations/paperclip/missions")
+	      .set("authorization", "Bearer inbound-route-secret")
+	      .send({
+	        companyId: "company-1",
+	        agentId: "agent-1",
+	        missionId: "paperclip-mission-1",
+	        prompt: "Restart nginx in production",
+	      }));
+
+	    expect(response.status).toBe(403);
+	    expect(response.body).toMatchObject({
+	      missionId: "daas-mission-1",
+	      status: "blocked_by_policy",
+	      executionAuthority: "daas",
+	      paperclipRunId: null,
+	    });
+	    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+	      action: "daas.mission_handoff.failed",
+	      details: expect.objectContaining({
+	        missionId: "daas-mission-1",
+	        status: "blocked_by_policy",
+	        responseStatus: 403,
+	      }),
+	    }));
+	  });
+
+	  it("returns non-2xx when DAAS reports a surfaced failure status over HTTP 200", async () => {
+	    process.env["PAPERCLIP_WEBHOOK_SECRET"] = "inbound-route-secret";
+	    process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
+	    process.env["DAAS_BASE_URL"] = "https://daas.example.test";
+	    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+	      ok: true,
+	      data: {
+	        daas_mission_id: "daas-mission-1",
+	        status: "rejected",
+	      },
+	    }), {
+	      status: 200,
+	      headers: { "content-type": "application/json" },
+	    })));
+	    const { app } = createMissionRouteApp();
+
+	    const response = await withLocalRequest(app, (client) => client
+	      .post("/api/integrations/paperclip/missions")
+	      .set("authorization", "Bearer inbound-route-secret")
+	      .send({
+	        companyId: "company-1",
+	        agentId: "agent-1",
+	        missionId: "paperclip-mission-1",
+	        prompt: "Restart nginx in production",
+	      }));
+
+	    expect(response.status).toBe(409);
+	    expect(response.body).toMatchObject({
+	      missionId: "daas-mission-1",
+	      status: "rejected",
+	      executionAuthority: "daas",
+	      paperclipRunId: null,
+	    });
+	  });
+
+	  it("rejects missing or invalid route secrets", async () => {
     process.env["PAPERCLIP_WEBHOOK_SECRET"] = "inbound-route-secret";
     const { app } = createMissionRouteApp();
 

@@ -60,6 +60,11 @@ import {
   logDaasInfrastructureTaskDenial,
   stripDaasMissionProvenanceFromUntrustedContext,
 } from "./daas-infrastructure-task-guard.js";
+import {
+  enforceInfrastructureTicketRouting,
+  readDaasInfrastructureIntentState,
+  routeInfrastructureTicketThroughDaasAdapter,
+} from "./daas-mission-adapter.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -3248,9 +3253,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
         assigneeAgentId: issues.assigneeAgentId,
-        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
-        executionPolicy: issues.executionPolicy,
-        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+	        assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+	        executionPolicy: issues.executionPolicy,
+	        executionState: issues.executionState,
+	        executionWorkspaceSettings: issues.executionWorkspaceSettings,
         originKind: issues.originKind,
         originId: issues.originId,
         originRunId: issues.originRunId,
@@ -6763,42 +6769,100 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ))
         .then((rows) => rows.map((row) => row.body))
       : [];
-    let infraTaskTitle: string | null = null;
-    let infraTaskDescription: string | null = null;
-    if (issueId) {
-      const guardIssue = await db
-        .select({ title: issues.title, description: issues.description, projectId: issues.projectId })
-        .from(issues)
-        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
-        .then((rows) => rows[0] ?? null);
-      infraTaskTitle = guardIssue?.title ?? null;
-      infraTaskDescription = guardIssue?.description ?? null;
-      if (!readNonEmptyString(context.projectId) && guardIssue?.projectId) {
-        context.projectId = guardIssue.projectId;
-      }
-    }
-    const infraGuard = guardDaasInfrastructureTaskDispatch({
-      title: infraTaskTitle,
-      description: infraTaskDescription,
-      reason: readNonEmptyString(context.wakeReason),
-      instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
-        contextSnapshot: context,
-        payload: wakeupPayload,
+	    let infraTaskTitle: string | null = null;
+	    let infraTaskDescription: string | null = null;
+	    let infraDurableSignals: string[] = [];
+	    if (issueId) {
+	      const guardIssue = await db
+	        .select({
+	          title: issues.title,
+	          description: issues.description,
+	          projectId: issues.projectId,
+	          executionState: issues.executionState,
+	        })
+	        .from(issues)
+	        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+	        .then((rows) => rows[0] ?? null);
+	      infraTaskTitle = guardIssue?.title ?? null;
+	      infraTaskDescription = guardIssue?.description ?? null;
+	      infraDurableSignals = readDaasInfrastructureIntentState(guardIssue?.executionState)?.signals ?? [];
+	      if (!readNonEmptyString(context.projectId) && guardIssue?.projectId) {
+	        context.projectId = guardIssue.projectId;
+	      }
+	    }
+	    const infraInstructionTexts = collectDaasInfrastructureTaskInstructionTexts({
+	      contextSnapshot: context,
+	      payload: wakeupPayload,
+	      reason: readNonEmptyString(context.wakeReason),
+	    }).concat(wakeCommentBodies);
+	    if (infraDurableSignals.length > 0) {
+	      const routed = await routeInfrastructureTicketThroughDaasAdapter(db, {
+	        companyId: run.companyId,
+	        agentId: run.agentId,
+	        issueId,
+	        title: infraTaskTitle,
+	        description: infraTaskDescription,
+	        promptTexts: [
+	          ...wakeCommentBodies,
+	          infraTaskDescription,
+	          infraTaskTitle,
+	        ],
+	        instructionTexts: [readNonEmptyString(context.wakeReason)].concat(infraInstructionTexts),
+	        contextSnapshot: context,
+	        signals: infraDurableSignals,
+	      });
+	      await cancelRunInternal(
+	        run.id,
+	        routed.cancellationReason ?? "DAAS blocked direct infrastructure task dispatch",
+	      );
+	      return null;
+	    }
+    // T269: infrastructure tickets are routed to the DAAS mission adapter and
+    // are NEVER dispatched through the internal executor. Only non-infra tickets
+    // fall through to internal execution.
+    const infraRouting = await enforceInfrastructureTicketRouting(
+      {
+        title: infraTaskTitle,
+        description: infraTaskDescription,
         reason: readNonEmptyString(context.wakeReason),
-      }).concat(wakeCommentBodies),
-    });
-    if (!infraGuard.allowed) {
-      logDaasInfrastructureTaskDenial(logger, {
-        result: infraGuard,
-        context: {
-          companyId: run.companyId,
-          agentId: run.agentId,
-          issueId,
-          projectId: readNonEmptyString(context.projectId),
-          source: run.invocationSource,
+        instructionTexts: infraInstructionTexts,
+      },
+      {
+        routeToDaasAdapter: async (infraGuard) => {
+          logDaasInfrastructureTaskDenial(logger, {
+            result: infraGuard,
+            context: {
+              companyId: run.companyId,
+              agentId: run.agentId,
+              issueId,
+              projectId: readNonEmptyString(context.projectId),
+              source: run.invocationSource,
+            },
+          });
+	          const routed = await routeInfrastructureTicketThroughDaasAdapter(db, {
+	            companyId: run.companyId,
+	            agentId: run.agentId,
+	            issueId,
+	            title: infraTaskTitle,
+	            description: infraTaskDescription,
+	            promptTexts: [
+	              ...wakeCommentBodies,
+	              infraTaskDescription,
+	              infraTaskTitle,
+	            ],
+	            instructionTexts: [readNonEmptyString(context.wakeReason)].concat(infraInstructionTexts),
+	            contextSnapshot: context,
+	            signals: [...new Set([...infraGuard.signals, ...infraDurableSignals])],
+          });
+          await cancelRunInternal(
+            run.id,
+            routed.cancellationReason ?? infraGuard.message ?? "DAAS blocked direct infrastructure task dispatch",
+          );
         },
-      });
-      await cancelRunInternal(run.id, infraGuard.message ?? "DAAS blocked direct infrastructure task dispatch");
+        runInternalExecutor: async () => undefined,
+      },
+    );
+    if (infraRouting.routedToDaas) {
       return null;
     }
 
@@ -7821,16 +7885,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
-    const issueId = readNonEmptyString(context.issueId);
-    let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
-    const issueDependencyReadiness = issueId
-      ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
-      : null;
-    if (
-      issueId &&
-      issueContext &&
-      shouldAutoCheckoutIssueForWake({
+	    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
+	    const issueId = readNonEmptyString(context.issueId);
+	    let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+	    const issueDependencyReadiness = issueId
+	      ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
+	      : null;
+	    const earlyDurableIntent = readDaasInfrastructureIntentState(issueContext?.executionState);
+	    const earlyInfraGuard = guardDaasInfrastructureTaskDispatch({
+	      title: issueContext?.title ?? null,
+	      description: issueContext?.description ?? null,
+	      reason: readNonEmptyString(context.wakeReason),
+	      instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
+	        contextSnapshot: context,
+	        payload: parseObject(context[PAPERCLIP_WAKE_PAYLOAD_KEY]),
+	        reason: readNonEmptyString(context.wakeReason),
+	      }),
+	    });
+	    if (!earlyInfraGuard.allowed || earlyDurableIntent) {
+	      logDaasInfrastructureTaskDenial(logger, {
+	        result: earlyInfraGuard.allowed && earlyDurableIntent
+	          ? { ...earlyInfraGuard, allowed: false, decision: "deny_requires_mission_route", signals: earlyDurableIntent.signals }
+	          : earlyInfraGuard,
+	        context: {
+	          companyId: agent.companyId,
+	          agentId: agent.id,
+	          issueId,
+	          projectId: issueContext?.projectId ?? null,
+	          source: run.invocationSource,
+	        },
+	      });
+	      const routed = await routeInfrastructureTicketThroughDaasAdapter(db, {
+	        companyId: agent.companyId,
+	        agentId: agent.id,
+	        issueId,
+	        title: issueContext?.title ?? null,
+	        description: issueContext?.description ?? null,
+	        promptTexts: [
+	          issueContext?.description ?? null,
+	          issueContext?.title ?? null,
+	        ],
+	        instructionTexts: [
+	          readNonEmptyString(context.wakeReason),
+	        ],
+	        contextSnapshot: context,
+	        signals: earlyInfraGuard.allowed ? earlyDurableIntent?.signals ?? [] : earlyInfraGuard.signals,
+	      });
+	      throw new Error(routed.cancellationReason);
+	    }
+	    if (
+	      issueId &&
+	      issueContext &&
+	      shouldAutoCheckoutIssueForWake({
         contextSnapshot: context,
         issueStatus: issueContext.status,
         issueAssigneeAgentId: issueContext.assigneeAgentId,
@@ -8024,10 +8130,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           description: issueContext.description,
           projectId: issueContext.projectId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
-          executionWorkspaceId: issueContext.executionWorkspaceId,
-          executionWorkspacePreference: issueContext.executionWorkspacePreference,
-        }
-      : null;
+	          executionWorkspaceId: issueContext.executionWorkspaceId,
+	          executionWorkspacePreference: issueContext.executionWorkspacePreference,
+	          executionState: issueContext.executionState,
+	        }
+	        : null;
     const continuationSummary = issueRef
       ? await getIssueContinuationSummaryDocument(db, issueRef.id)
       : null;
@@ -8114,6 +8221,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipTaskMarkdown = taskMarkdown;
     } else {
       delete context.paperclipTaskMarkdown;
+    }
+	    const preRuntimeDurableIntent = readDaasInfrastructureIntentState(issueRef?.executionState);
+	    const preRuntimeInstructionTexts = [
+	      ...collectDaasInfrastructureTaskInstructionTexts({
+	        contextSnapshot: context,
+	        payload: parseObject(context[PAPERCLIP_WAKE_PAYLOAD_KEY]),
+	        reason: readNonEmptyString(context.wakeReason),
+	      }),
+	      taskMarkdown,
+	      readNonEmptyString(parseObject(context.paperclipContinuationSummary).body),
+	      readNonEmptyString(parseObject(context.paperclipContinuationSummary).title),
+	      readNonEmptyString(context.livenessContinuationInstruction),
+	      readNonEmptyString(context.livenessContinuationReason),
+	    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+	    const preRuntimeInfraGuard = guardDaasInfrastructureTaskDispatch({
+	      title: issueRef?.title ?? null,
+	      description: issueRef?.description ?? null,
+	      reason: readNonEmptyString(context.wakeReason),
+	      instructionTexts: preRuntimeInstructionTexts,
+	    });
+	    if (!preRuntimeInfraGuard.allowed || preRuntimeDurableIntent) {
+      logDaasInfrastructureTaskDenial(logger, {
+	        result: preRuntimeInfraGuard.allowed && preRuntimeDurableIntent
+	          ? { ...preRuntimeInfraGuard, allowed: false, decision: "deny_requires_mission_route", signals: preRuntimeDurableIntent.signals }
+	          : preRuntimeInfraGuard,
+        context: {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId,
+          projectId: issueRef?.projectId ?? null,
+          source: run.invocationSource,
+        },
+      });
+	      const routed = await routeInfrastructureTicketThroughDaasAdapter(db, {
+	        companyId: agent.companyId,
+	        agentId: agent.id,
+	        issueId,
+	        title: issueRef?.title ?? null,
+	        description: issueRef?.description ?? null,
+	        promptTexts: [
+	          readNonEmptyString(safeWakeCommentContext?.body),
+	          taskMarkdown,
+	          readNonEmptyString(parseObject(context.paperclipContinuationSummary).body),
+	          readNonEmptyString(parseObject(context.paperclipContinuationSummary).title),
+	          issueRef?.description ?? null,
+	          issueRef?.title ?? null,
+	        ],
+	        instructionTexts: preRuntimeInstructionTexts,
+	        contextSnapshot: context,
+	        signals: preRuntimeInfraGuard.allowed ? preRuntimeDurableIntent?.signals ?? [] : preRuntimeInfraGuard.signals,
+	      });
+      throw new Error(routed.cancellationReason);
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
@@ -9017,35 +9176,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
-      }
-      const finalInfraGuard = guardDaasInfrastructureTaskDispatch({
-        title: issueRef?.title ?? null,
-        description: issueRef?.description ?? null,
-        reason: readNonEmptyString(context.wakeReason),
-        instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
-          contextSnapshot: context,
-          payload: parseObject(context[PAPERCLIP_WAKE_PAYLOAD_KEY]),
-          reason: readNonEmptyString(context.wakeReason),
-        }).concat([
-          taskMarkdown,
-          readNonEmptyString(parseObject(context.paperclipContinuationSummary).body),
-          readNonEmptyString(parseObject(context.paperclipContinuationSummary).title),
-          readNonEmptyString(context.livenessContinuationInstruction),
-          readNonEmptyString(context.livenessContinuationReason),
-        ].filter((value): value is string => typeof value === "string" && value.length > 0)),
-      });
-      if (!finalInfraGuard.allowed) {
-        logDaasInfrastructureTaskDenial(logger, {
-          result: finalInfraGuard,
-          context: {
-            companyId: agent.companyId,
-            agentId: agent.id,
-            issueId,
-            projectId: issueRef?.projectId ?? null,
-            source: run.invocationSource,
-          },
-        });
-        throw new Error(finalInfraGuard.message ?? "DAAS blocked direct infrastructure task dispatch");
       }
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const recordWorkspaceFinalize = async (
@@ -10206,17 +10336,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enrichedContextSnapshot.projectId = projectId;
     }
 
-    let ingressInfraTaskTitle: string | null = null;
-    let ingressInfraTaskDescription: string | null = null;
-    if (issueId) {
-      const guardIssue = await db
-        .select({ title: issues.title, description: issues.description })
-        .from(issues)
-        .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId)))
-        .then((rows) => rows[0] ?? null);
-      ingressInfraTaskTitle = guardIssue?.title ?? null;
-      ingressInfraTaskDescription = guardIssue?.description ?? null;
-    }
+	    let ingressInfraTaskTitle: string | null = null;
+	    let ingressInfraTaskDescription: string | null = null;
+	    let ingressDurableSignals: string[] = [];
+	    if (issueId) {
+	      const guardIssue = await db
+	        .select({ title: issues.title, description: issues.description, executionState: issues.executionState })
+	        .from(issues)
+	        .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId)))
+	        .then((rows) => rows[0] ?? null);
+	      ingressInfraTaskTitle = guardIssue?.title ?? null;
+	      ingressInfraTaskDescription = guardIssue?.description ?? null;
+	      ingressDurableSignals = readDaasInfrastructureIntentState(guardIssue?.executionState)?.signals ?? [];
+	    }
     const ingressWakeCommentIds = collectWakeCommentIds(enrichedContextSnapshot);
     const ingressWakeCommentBodies = ingressWakeCommentIds.length > 0
       ? await db
@@ -10233,15 +10365,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       title: ingressInfraTaskTitle,
       description: ingressInfraTaskDescription,
       reason,
-      instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
-        contextSnapshot: enrichedContextSnapshot,
-        payload,
-        reason,
-      }).concat(ingressWakeCommentBodies),
+	      instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
+	        contextSnapshot: enrichedContextSnapshot,
+	        payload,
+	        reason,
+	      }).concat(ingressWakeCommentBodies),
     });
-    if (!ingressInfraGuard.allowed) {
+    const ingressRoutingSignals = [...new Set([
+      ...(ingressInfraGuard.allowed ? [] : ingressInfraGuard.signals),
+      ...ingressDurableSignals,
+    ])];
+    if (!ingressInfraGuard.allowed || ingressRoutingSignals.length > 0) {
       logDaasInfrastructureTaskDenial(logger, {
-        result: ingressInfraGuard,
+        result: ingressInfraGuard.allowed
+          ? {
+            allowed: false,
+            decision: "deny_requires_mission_route",
+            message: "DAAS durable infrastructure intent requires mission routing",
+            signals: ingressRoutingSignals,
+            missionRoute: ingressInfraGuard.missionRoute,
+          }
+          : ingressInfraGuard,
         context: {
           companyId: agent.companyId,
           agentId,
@@ -10250,13 +10394,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source,
         },
       });
-      await writeSkippedRequest("daas.infrastructure_task.denied", {
-        error: ingressInfraGuard.message ?? "DAAS blocked direct infrastructure task dispatch",
-        payload: { blockedBy: "daas_infrastructure_task_guard" },
+	      const routed = await routeInfrastructureTicketThroughDaasAdapter(db, {
+	        companyId: agent.companyId,
+	        agentId,
+	        issueId,
+	        title: ingressInfraTaskTitle,
+	        description: ingressInfraTaskDescription,
+	        promptTexts: [
+	          ...ingressWakeCommentBodies,
+	          ingressInfraTaskDescription,
+	          ingressInfraTaskTitle,
+	        ],
+	        instructionTexts: collectDaasInfrastructureTaskInstructionTexts({
+	          contextSnapshot: enrichedContextSnapshot,
+          payload,
+          reason,
+        }).concat(ingressWakeCommentBodies),
+        contextSnapshot: enrichedContextSnapshot,
+        signals: ingressRoutingSignals,
       });
-      if (opts.requestedByActorType === "user") {
-        throw conflict(ingressInfraGuard.message ?? "DAAS blocked direct infrastructure task dispatch");
+      await writeSkippedRequest(
+        routed.dispatch.ok ? "daas.mission_route.accepted" : "daas.mission_route.surfaced",
+        {
+          error: routed.cancellationReason,
+          payload: {
+            blockedBy: "daas_mission_adapter",
+            daasMissionId: routed.dispatch.daasMissionId,
+            daasStatus: routed.dispatch.daasStatus,
+            outcome: routed.dispatch.outcome,
+            ok: routed.dispatch.ok,
+          },
+        },
+      );
+      if (!routed.dispatch.ok) {
+        throw conflict(routed.cancellationReason, {
+          daasMissionId: routed.dispatch.daasMissionId,
+          daasStatus: routed.dispatch.daasStatus,
+          outcome: routed.dispatch.outcome,
+        });
       }
+      logger.info({
+        agentId,
+        issueId,
+        daasMissionId: routed.dispatch.daasMissionId,
+        daasStatus: routed.dispatch.daasStatus,
+      }, "Routed infrastructure ticket wakeup to DAAS mission adapter");
       return null;
     }
 

@@ -14,6 +14,15 @@ export function isDaasBlockedInfrastructureAdapterType(adapterType: string | und
   return Boolean(adapterType && blockedInfrastructureAdapterTypes.has(adapterType));
 }
 
+export function materializeDaasSafeAdapterDefaults(
+  adapterType: string | null | undefined,
+  adapterConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  if (adapterType !== "claude_local" && adapterType !== "opencode_local") return adapterConfig;
+  if (typeof adapterConfig.dangerouslySkipPermissions === "boolean") return adapterConfig;
+  return { ...adapterConfig, dangerouslySkipPermissions: false };
+}
+
 export function collectDaasDirectInfrastructureConfigPaths(
   value: unknown,
   path: string,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectDaasDirectInfrastructureConfigPaths,
   isDaasBlockedInfrastructureAdapterType,
+  materializeDaasSafeAdapterDefaults,
 } from "../services/daas-infrastructure-guard.js";
 
 describe("DAAS direct infrastructure guard", () => {
@@ -11,7 +12,7 @@ describe("DAAS direct infrastructure guard", () => {
     expect(isDaasBlockedInfrastructureAdapterType("claude_local")).toBe(false);
   });
 
-  it("blocks true dangerous permission bypass flags", () => {
+	  it("blocks true dangerous permission bypass flags", () => {
     expect(
       collectDaasDirectInfrastructureConfigPaths(
         {
@@ -22,9 +23,24 @@ describe("DAAS direct infrastructure guard", () => {
         "adapterConfig",
       ),
     ).toEqual(["adapterConfig.dangerouslySkipPermissions", "adapterConfig.dangerouslyBypassSandbox"]);
-  });
+	  });
 
-  it("blocks direct SSH execution targets in nested runtime config", () => {
+	  it("materializes omitted local-adapter permission bypass defaults as false", () => {
+	    for (const adapterType of ["claude_local", "opencode_local"]) {
+	      expect(materializeDaasSafeAdapterDefaults(adapterType, {})).toEqual({
+	        dangerouslySkipPermissions: false,
+	      });
+	      expect(materializeDaasSafeAdapterDefaults(adapterType, { dangerouslySkipPermissions: false })).toEqual({
+	        dangerouslySkipPermissions: false,
+	      });
+	      expect(materializeDaasSafeAdapterDefaults(adapterType, { dangerouslySkipPermissions: true })).toEqual({
+	        dangerouslySkipPermissions: true,
+	      });
+	    }
+	    expect(materializeDaasSafeAdapterDefaults("codex_local", {})).toEqual({});
+	  });
+
+	  it("blocks direct SSH execution targets in nested runtime config", () => {
     expect(
       collectDaasDirectInfrastructureConfigPaths(
         {

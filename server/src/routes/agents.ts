@@ -60,6 +60,7 @@ import {
 import {
   collectDaasDirectInfrastructureConfigPaths,
   isDaasBlockedInfrastructureAdapterType,
+  materializeDaasSafeAdapterDefaults,
 } from "../services/daas-infrastructure-guard.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
@@ -1131,10 +1132,11 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
-    if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
-      next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
-      return ensureGatewayDeviceKey(adapterType, next);
-    }
+	    Object.assign(next, materializeDaasSafeAdapterDefaults(adapterType, next));
+	    if (adapterType === "opencode_local" && !asNonEmptyString(next.model)) {
+	      next.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+	      return ensureGatewayDeviceKey(adapterType, next);
+	    }
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
@@ -1541,16 +1543,17 @@ export function agentRoutes(
     validate(testAdapterEnvironmentSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      const type = assertKnownAdapterType(req.params.type as string);
-      await assertCanReadConfigurations(req, companyId);
+	      const type = assertKnownAdapterType(req.params.type as string);
+	      await assertCanReadConfigurations(req, companyId);
 
-      const adapter = requireServerAdapter(type);
+	      const inputAdapterConfig =
+	        (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+	      assertNoDaasDirectInfrastructureMutation(type, inputAdapterConfig, "adapterConfig");
+	      const adapter = requireServerAdapter(type);
 
-      const inputAdapterConfig =
-        (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
-      const requestedEnvironmentId =
-        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
-          ? (req.body.environmentId as string)
+	      const requestedEnvironmentId =
+	        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
+	          ? (req.body.environmentId as string)
           : null;
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,

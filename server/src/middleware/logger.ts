@@ -31,7 +31,11 @@ const sharedOpts = {
 
 export const HTTP_LOG_REDACT_PATHS = [
   "req.headers.authorization",
+  "req.headers.x-paperclip-adapter-token",
+  "req.headers.x-paperclip-signature",
   "req.headers.x-paperclip-webhook-secret",
+  'req.headers["x-paperclip-adapter-token"]',
+  'req.headers["x-paperclip-signature"]',
   'req.headers["x-paperclip-webhook-secret"]',
 ];
 

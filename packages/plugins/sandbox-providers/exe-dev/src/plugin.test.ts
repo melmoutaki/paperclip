@@ -31,7 +31,7 @@ describe("exe.dev sandbox provider plugin", () => {
     expect(plugin.definition.onEnvironmentExecute).toBeTypeOf("function");
   });
 
-  it("normalizes config and emits SSH guidance warnings", async () => {
+  it("fails closed at save-time without SSH guidance or normalized config", async () => {
     process.env.EXE_API_KEY = "host-key";
 
     const result = await plugin.definition.onEnvironmentValidateConfig?.({
@@ -55,38 +55,15 @@ describe("exe.dev sandbox provider plugin", () => {
     });
 
     expect(result).toEqual({
-      ok: true,
-      warnings: [
-        "The Paperclip host must have SSH access to the created exe.dev VM, and its SSH key must be registered with exe.dev. The API token only covers provisioning.",
-        "reuseLease keeps the VM alive between runs; this provider does not suspend retained VMs.",
-      ],
-      normalizedConfig: {
-        apiKey: null,
-        apiUrl: "https://exe.dev/exec",
-        namePrefix: "paperclip-sandbox",
-        image: "ubuntu:22.04",
-        command: null,
-        cpu: 4,
-        memory: "8GB",
-        disk: "50GB",
-        comment: null,
-        env: { FOO: "bar" },
-        integrations: ["github"],
-        tags: ["prod", "sandbox"],
-        setupScript: null,
-        prompt: null,
-        timeoutMs: 450000,
-        reuseLease: true,
-        sshUser: null,
-        sshPrivateKey: null,
-        sshIdentityFile: null,
-        sshPort: 2222,
-        strictHostKeyChecking: "accept-new",
-      },
+      ok: false,
+      errors: [DAAS_EXE_DEV_DISABLED_MESSAGE],
+      warnings: [],
     });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("normalizes trailing /exec apiUrl inputs without duplication", async () => {
+  it("rejects trailing /exec apiUrl inputs without save-time normalization", async () => {
     process.env.EXE_API_KEY = "host-key";
 
     const result = await plugin.definition.onEnvironmentValidateConfig?.({
@@ -96,15 +73,14 @@ describe("exe.dev sandbox provider plugin", () => {
       },
     });
 
-    expect(result).toMatchObject({
-      ok: true,
-      normalizedConfig: {
-        apiUrl: "https://exe.dev/exec",
-      },
+    expect(result).toEqual({
+      ok: false,
+      errors: [DAAS_EXE_DEV_DISABLED_MESSAGE],
+      warnings: [],
     });
   });
 
-  it("rejects invalid config", async () => {
+  it("fails closed before config-specific validation", async () => {
     await expect(plugin.definition.onEnvironmentValidateConfig?.({
       driverKey: "exe-dev",
       config: {
@@ -119,18 +95,8 @@ describe("exe.dev sandbox provider plugin", () => {
       },
     })).resolves.toEqual({
       ok: false,
-      warnings: [
-        "The Paperclip host must have SSH access to the created exe.dev VM, and its SSH key must be registered with exe.dev. The API token only covers provisioning.",
-      ],
-      errors: [
-        "apiUrl must be a valid URL.",
-        "timeoutMs must be between 1 and 86400000.",
-        "cpu must be greater than 0 when provided.",
-        "sshPort must be between 1 and 65535.",
-        "exe.dev environments require an API key in config or EXE_API_KEY.",
-        "env contains an invalid key: BAD-KEY",
-        "strictHostKeyChecking cannot be empty.",
-      ],
+      errors: [DAAS_EXE_DEV_DISABLED_MESSAGE],
+      warnings: [],
     });
   });
 
@@ -162,7 +128,7 @@ describe("exe.dev sandbox provider plugin", () => {
       expect(validateSshPrivateKey(VALID_RSA_PEM)).toBeNull();
     });
 
-    it("accepts UUID-like secret reference values from the save-time schema stage", async () => {
+    it("fails closed at save-time even with UUID-like secret reference values", async () => {
       process.env.EXE_API_KEY = "host-key";
 
       const result = await plugin.definition.onEnvironmentValidateConfig?.({
@@ -173,13 +139,11 @@ describe("exe.dev sandbox provider plugin", () => {
         },
       });
 
-      expect(result).toMatchObject({
-        ok: true,
-        normalizedConfig: {
-          sshPrivateKey: "11111111-1111-4111-8111-111111111111",
-        },
+      expect(result).toEqual({
+        ok: false,
+        errors: [DAAS_EXE_DEV_DISABLED_MESSAGE],
+        warnings: [],
       });
-      expect(result?.errors ?? []).toEqual([]);
     });
 
     it("treats empty / whitespace-only input as valid (falls back to on-host key)", () => {
@@ -228,7 +192,7 @@ describe("exe.dev sandbox provider plugin", () => {
       expect(validateSshPrivateKey(mismatched)).toMatch(/header\/footer mismatch/);
     });
 
-    it("returns the sshPrivateKey error from onEnvironmentValidateConfig on save", async () => {
+    it("fails closed before sshPrivateKey save-time validation", async () => {
       process.env.EXE_API_KEY = "host-key";
 
       const result = await plugin.definition.onEnvironmentValidateConfig?.({
@@ -238,10 +202,11 @@ describe("exe.dev sandbox provider plugin", () => {
         },
       });
 
-      expect(result?.ok).toBe(false);
-      expect(result?.errors ?? []).toEqual(
-        expect.arrayContaining([expect.stringMatching(/sshPrivateKey looks like a PUBLIC key/)]),
-      );
+      expect(result).toEqual({
+        ok: false,
+        errors: [DAAS_EXE_DEV_DISABLED_MESSAGE],
+        warnings: [],
+      });
     });
   });
 
