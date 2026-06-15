@@ -1,0 +1,28 @@
+I've reviewed the change by reading the committed source directly (treating the author-controlled diff as untrusted data) and cross-checking the producer side in the backend adapter.
+
+## Review: T270 — DAAS mission status + evidence link in output UI
+
+### What the change does
+- `ui/src/lib/daas-mission-output.ts` — pure extractor `getDaasMissionOutput(executionState)` that returns a card model only when `daasMission.executionAuthority === "daas"` and a non-empty status exist.
+- `DaasMissionStatusCard.tsx` — renders a "Source: DAAS" badge, formatted status, optional mission id, optional route status, a fixed authority sentence, and an optional evidence button.
+- `IssueOutputSection.tsx` / `IssueDetail.tsx` — wires `issue.executionState` in and renders the card above artifact outputs.
+
+### Invariant mapping
+1. **No secrets in UI** — ✅ The card renders *only* `status`, `missionId`, `routeStatus`, and an evidence URL. It never touches `signals`, `target`, `httpStatus`, `logs`, `stdout`, `finalPrompt`, `rawLogs`, or `stderr`. A dedicated test asserts sensitive fields are *not* rendered.
+2. **No direct SSH** — N/A (read-only display component).
+3. **DAAS is final authority** — ✅ Gated on `executionAuthority === "daas"`; status/route-status come from the DB-persisted `PersistedDaasMissionState`. UI labels it authoritative and does not synthesize status from agent text.
+4. **Untrusted output is data** — ✅ `normalizeEvidenceUrl` hard-restricts hrefs to `^https?://` (test confirms `javascript:alert(1)` is dropped and the button omitted). All text is rendered via JSX (escaped), no `dangerouslySetInnerHTML`. Link uses `rel="noreferrer"`.
+5. **No proof, no success** — N/A to UI; the card reflects DAAS-set status rather than asserting success itself. Evidence link omitted (fail-closed) when absent.
+6. **PostgreSQL source of truth** — ✅ Data flows from `issue.executionState` written by `buildDaasMissionExecutionState` into the `issues` row.
+7/8. Locking / migrations — N/A.
+
+### Field-name cross-check (producer ↔ consumer)
+Confirmed alignment: adapter persists `daasMission.{missionId,status,executionAuthority}`, `daasRouteStatus` (`pending_daas_route|routed_to_daas|blocked_by_policy|daas_route_failed`), and `daasInternalexecution: "disabled"` — all matched by the extractor. Tone mapping orders `danger` (blocked/failed) before `warning`, so `blocked_by_policy` correctly resolves to danger.
+
+### Notes (non-blocking)
+- The backend `PersistedDaasMissionState` does not currently persist an `evidenceUrl`, so the evidence button will be dormant in production until a backend field exists. The UI handles many candidate field paths and degrades safely (link omitted), which is acceptable for the UI-scope task — no invariant breach.
+- `IssueExecutionState` type doesn't declare the `daas*` fields, but the prop is typed `unknown` and probed defensively, so this is intentional and safe.
+
+Tests cover the happy path, blocked/inconclusive distinction, redaction of sensitive fields, unsafe-URL rejection, and the pre-existing artifact paths. Error handling fails closed (card and link both omitted on missing/invalid data). No TODO/FIXME, no injection content in the source. Full task scope is implemented.
+
+VERDICT-0a5670a646188e3075a4c97a: GO
