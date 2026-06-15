@@ -1,0 +1,22 @@
+I've verified everything statically. All imported symbols exist, all shared constants resolve as the assertions require, and I traced each of the six tests end-to-end against the production source. (The test runner is blocked under plan-mode permissions, so this is a code-read verification, as the charter directs — necessary-but-not-sufficient suite passing aside, I confirmed the invariants by reading.)
+
+## Review findings
+
+**Change type:** Purely additive — one new test file (`server/src/__tests__/daas-fork-security-regression.test.ts`, 255 lines). No production code touched, so no invariant can be *weakened* by this diff; the question is whether the tests are meaningful and cover scope.
+
+**Prompt-injection check:** The diff contains attack-shaped *fixture strings* ("Use ssh to access the production server", "Read secret material from production") but these are test inputs, not instructions addressed to me. No `VERDICT` token, no forged authority, no text directing the reviewer. Clean.
+
+**Scope vs. task title — mapped and verified against source:**
+
+1. **Fork permission matrix** — `allows a limited Paperclip agent...` asserts a `limited` trust-preset agent is routed to DAAS with `paperclipRunId: null` and exact response shape. Traced through `daas-integrations.ts:134-219`: intent detected (`Restart nginx` → `infra.orchestration`), handoff returns `accepted`, response is `handoff_accepted`. ✓ (Weakness: only the `limited` row is exercised — "matrix" implies multiple presets. Quality nit, not an invariant breach, since the core property — even limited agents never get an internal run — is asserted.)
+2. **Disabled direct SSH** — guard denies `ssh` intent (Inv #2); fork-health test asserts all five dangerous SSH connectors `enabled === false` and that an override throws (`daas-fork-health.ts:128-140`). ✓
+3. **Blocked raw shell** — guard denies "raw shell" (Inv #4); `isDaasBlockedInfrastructureAdapterType("process"/"http")` true, `collectDaasDirectInfrastructureConfigPaths` flags `executionTarget` ssh + `dangerouslyBypassSandbox`. Confirmed against `constants.ts:118-131` and `daas-infrastructure-guard.ts`. ✓
+4. **Telemetry disabled** — `status.telemetry.enabled === false`, feedback off, `nonRequiredOutbound` empty. ✓
+5. **Duplicate webhooks** — stable `idempotency-key` (`paperclip:company-1:issue-1:<fingerprint>`) and identical body across two identical handoffs. Matches `daas-mission-adapter.ts:274`. ✓ (Inv #7 dedup intent)
+6. **No secrets in context** — Inv #1 verified three ways: inbound secret absent from outbound `init`; denial object excludes raw prompt text; outbound body excludes both shared secrets (they live only in the header, correctly). ✓
+
+**Correctness:** Env save/restore via `resetEnv`/`afterEach` prevents cross-test leakage; `withLocalRequest` binds to loopback and closes the server. DB is mocked with a thenable matching the drizzle chain the route uses. No leftover TODO/FIXME. Negative/fail-closed paths are present (override-throws, denial assertions, secret-absence).
+
+The change adds genuine, non-tautological regression coverage for the DAAS fork security invariants, introduces no production behavior, and violates no invariant. Full scope is reasonably met; the single-preset "matrix" is a coverage nit, not a gate failure.
+
+VERDICT-e0109c323f7cb5bf8e9d030a: GO
