@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T274",
+  "title": "Add tests for fork permission matrix, disabled direct SSH, blocked raw shell, telemetry disabled, duplicate webhooks and no secrets in context",
+  "author_engine": "codex",
+  "author_pool": "OAI-C55-QA",
+  "reviewer_engine": "claude",
+  "reviewer_cli_version": "2.1.169 (Claude Code)",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "d25c08efaa79f6b02ce2c202301d0e96477d0558",
+  "reviewed_sha": "e4c3604df13922c3ef61497fb689c2816e56df32",
+  "diff_sha256": "5e04f3214d23896bf61eee6849f0d1539f0a665df13a5d5559de0b4d07f39b84",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "e0109c323f7cb5bf8e9d030a",
+  "review_log": ".gate/records/T274-e4c3604df139.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}
