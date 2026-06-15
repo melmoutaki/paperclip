@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T275",
+  "title": "Pass Paperclip fork acceptance: limited-permission Paperclip agent creates DAAS mission, cannot SSH directly, receives DAAS evidence link",
+  "author_engine": "claude",
+  "author_pool": "CLAUDE-O48-PC",
+  "reviewer_engine": "codex",
+  "reviewer_cli_version": "codex-cli 0.138.0",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "36536ae7ec497ee4db850640927878479845197e",
+  "reviewed_sha": "d24ee1ef94256813a86ec2e68d0083b9455dcbe0",
+  "diff_sha256": "215ee1466393a3fe921b752ad703cf52d1f65af981b0ebf53f00202bae73efbb",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "8b10083a1b478879dafe117f",
+  "review_log": ".gate/records/T275-d24ee1ef9425.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}
