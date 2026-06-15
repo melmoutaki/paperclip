@@ -26,9 +26,45 @@ function readFirstString(...values: unknown[]): string | null {
   return null;
 }
 
-function normalizeEvidenceUrl(value: string | null): string | null {
+/**
+ * Accept only a non-secret DAAS evidence link. This mirrors the server's
+ * `readSafeEvidenceUrl` contract closely enough for persisted state rendering:
+ * absolute `http(s)`, bounded evidence/proof path, no userinfo credentials, no
+ * query string, and no fragment. The public DAAS base URL must be serialized
+ * into the UI so raw/tampered persisted execution state cannot choose its own
+ * trusted origin.
+ */
+function hasSafeEvidencePath(pathname: string, missionId: string | null): boolean {
+  const parts = pathname.split("/").filter(Boolean);
+  const finalPart = parts.at(-1);
+  if (finalPart !== "evidence" && finalPart !== "proof" && finalPart !== "e") return false;
+  if (!missionId) return false;
+  const missionIndex = parts.lastIndexOf("missions");
+  return missionIndex >= 0 &&
+    parts[missionIndex + 1] === missionId &&
+    missionIndex + 2 === parts.length - 1;
+}
+
+function normalizeEvidenceUrl(value: string | null, missionId: string | null): string | null {
   if (!value) return null;
-  return /^https?:\/\//i.test(value) ? value : null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  const configuredBase = readString(import.meta.env.VITE_DAAS_BASE_URL);
+  if (!configuredBase) return null;
+  try {
+    if (url.origin !== new URL(configuredBase).origin) return null;
+  } catch {
+    return null;
+  }
+  if (!hasSafeEvidencePath(url.pathname, missionId)) return null;
+  if (url.username || url.password) return null;
+  if (url.search || url.hash) return null;
+  return value;
 }
 
 function readEvidenceUrl(state: RecordLike, mission: RecordLike, routed: RecordLike | null): string | null {
@@ -36,6 +72,7 @@ function readEvidenceUrl(state: RecordLike, mission: RecordLike, routed: RecordL
   const evidence = isRecord(mission.evidence) ? mission.evidence : null;
   const routedLinks = routed && isRecord(routed.links) ? routed.links : null;
 
+  const missionId = readFirstString(mission.missionId, mission.daasMissionId, state.daasMissionId);
   return normalizeEvidenceUrl(readFirstString(
     mission.evidenceUrl,
     mission.evidence_url,
@@ -56,7 +93,7 @@ function readEvidenceUrl(state: RecordLike, mission: RecordLike, routed: RecordL
     routedLinks?.evidence,
     state.daasEvidenceUrl,
     state.daasEvidenceLink,
-  ));
+  ), missionId);
 }
 
 function toneForStatus(status: string, routeStatus: string | null): DaasMissionTone {

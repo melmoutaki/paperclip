@@ -15,6 +15,7 @@ import {
 
 export const DAAS_MISSION_DESTINATION_ROUTE = "/api/missions";
 const DEFAULT_DAAS_MISSION_HANDOFF_TIMEOUT_MS = 10_000;
+export const DAAS_MISSION_EVIDENCE_REQUIRED_STATUS = "daas_mission_evidence_required";
 const DAAS_HTTP_ALLOWED_HOSTS = new Set([
   "localhost",
   "127.0.0.1",
@@ -81,12 +82,14 @@ export type DaasMissionRoutingOutcome =
 export interface DaasMissionAdapterDispatchResult {
   /** Coarse outcome used to drive the ticket workflow decision. */
   outcome: DaasMissionRoutingOutcome;
-  /** true only when DAAS returns an accepted/running mission status. Never fabricated. */
+  /** true only when DAAS returns an accepted/running mission status plus safe evidence. Never fabricated. */
   ok: boolean;
   /** Raw DAAS status (or a synthetic adapter status when DAAS was unreachable). */
   daasStatus: string;
   /** DAAS-owned mission id to persist on the ticket. */
   daasMissionId: string | null;
+  /** DAAS-provided evidence/proof link (http(s) only), required for accepted handoffs. */
+  evidenceUrl: string | null;
   httpStatus: number;
   /** Always false — this module never fakes a successful execution. */
   faked: false;
@@ -105,6 +108,96 @@ function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+/**
+ * Read a DAAS-provided evidence/proof URL under a deliberately narrow,
+ * fail-closed contract: a non-secret evidence link is an absolute `http(s)`
+ * URL with **no userinfo credentials, no query string, and no fragment**.
+ *
+ * This enforces DAAS invariant 1 (sensitive material never lands in the
+ * DB / UI / responses / evidence). A scheme-only check is insufficient: links
+ * with userinfo, query strings, or fragments are valid http(s) URLs yet can
+ * carry material that must not reach limited-agent context. We reject those,
+ * plus anything that is not a
+ * parseable absolute http(s) URL (`javascript:`, `file:`, `data:`, relative
+ * paths, non-strings). Returns the trimmed original so the persisted link
+ * matches what DAAS sent.
+ */
+function hasSafeEvidencePath(pathname: string, expectedMissionId?: string | null): boolean {
+  const parts = pathname.split("/").filter(Boolean);
+  const finalPart = parts.at(-1);
+  if (finalPart !== "evidence" && finalPart !== "proof" && finalPart !== "e") return false;
+  const missionId = readNonEmptyString(expectedMissionId);
+  if (!missionId) return parts.length === 1;
+  const missionIndex = parts.lastIndexOf("missions");
+  return missionIndex >= 0 &&
+    parts[missionIndex + 1] === missionId &&
+    missionIndex + 2 === parts.length - 1;
+}
+
+export function readSafeEvidenceUrl(value: unknown, expectedOrigin?: string | null, expectedMissionId?: string | null): string | null {
+  const str = readNonEmptyString(value);
+  if (!str) return null;
+  const trimmed = str.trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null; // not a parseable absolute URL — fail closed
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (expectedOrigin && url.origin !== expectedOrigin) return null;
+  if (!hasSafeEvidencePath(url.pathname, expectedMissionId)) return null;
+  // No embedded credentials, query, or fragment: those are the channels a
+  // tampered or careless DAAS response would use to carry a token/secret.
+  if (url.username || url.password) return null;
+  if (url.search) return null;
+  if (url.hash) return null;
+  return trimmed;
+}
+
+function readFirstSafeEvidenceUrl(
+  expectedOrigin: string | null | undefined,
+  expectedMissionId: string | null | undefined,
+  ...values: unknown[]
+): string | null {
+  for (const value of values) {
+    const url = readSafeEvidenceUrl(value, expectedOrigin, expectedMissionId);
+    if (url) return url;
+  }
+  return null;
+}
+
+/**
+ * Parse a DAAS evidence link from a mission response, tolerating the common
+ * field shapes DAAS may use: `evidence_url` / `evidenceUrl`,
+ * `evidence.{link,url,href}`, and `links.{evidence,evidence_url,evidenceUrl}`.
+ * Both the response envelope and its `data` object are inspected. Only safe
+ * http(s) URLs are returned (see {@link readSafeEvidenceUrl}).
+ */
+export function parseDaasEvidenceUrl(
+  payload: Record<string, unknown> | null,
+  data: Record<string, unknown> | null,
+  expectedOrigin?: string | null,
+  expectedMissionId?: string | null,
+): string | null {
+  const evidence = readRecord(data?.evidence) ?? readRecord(payload?.evidence);
+  const links = readRecord(data?.links) ?? readRecord(payload?.links);
+  return readFirstSafeEvidenceUrl(
+    expectedOrigin,
+    expectedMissionId,
+    data?.evidence_url,
+    data?.evidenceUrl,
+    payload?.evidence_url,
+    payload?.evidenceUrl,
+    evidence?.link,
+    evidence?.url,
+    evidence?.href,
+    links?.evidence,
+    links?.evidence_url,
+    links?.evidenceUrl,
+  );
 }
 
 function stableJson(value: unknown): string {
@@ -244,6 +337,7 @@ export async function postInfrastructureTicketToDaasAdapter(input: {
       ok: false,
       daasStatus: "daas_mission_adapter_unavailable",
       daasMissionId: null,
+      evidenceUrl: null,
       httpStatus: 0,
       faked: false,
     };
@@ -282,6 +376,7 @@ export async function postInfrastructureTicketToDaasAdapter(input: {
       ok: false,
       daasStatus: "daas_mission_adapter_unavailable",
       daasMissionId: null,
+      evidenceUrl: null,
       httpStatus: 0,
       faked: false,
     };
@@ -296,6 +391,7 @@ export async function postInfrastructureTicketToDaasAdapter(input: {
     readNonEmptyString(data?.daas_mission_id) ??
     readNonEmptyString(payload?.missionId) ??
     readNonEmptyString(payload?.daas_mission_id);
+  const evidenceUrl = parseDaasEvidenceUrl(payload, data, input.url.origin, daasMissionId);
   const status =
     readNonEmptyString(data?.status) ??
     readNonEmptyString(payload?.status);
@@ -307,21 +403,29 @@ export async function postInfrastructureTicketToDaasAdapter(input: {
       ok: false,
       daasStatus: status ?? classification,
       daasMissionId,
+      evidenceUrl,
       httpStatus: response.status,
       faked: false,
     };
   }
 
+  const acceptedWithoutRequiredEvidence =
+    wrapperOk !== false &&
+    classification === "routed_accepted" &&
+    (!response.ok || !daasMissionId || !evidenceUrl);
   if (
     !classification ||
     wrapperOk === false ||
-    (classification === "routed_accepted" && (!response.ok || !daasMissionId))
+    acceptedWithoutRequiredEvidence
   ) {
     return {
       outcome: "handoff_failed",
       ok: false,
-      daasStatus: "daas_mission_handoff_failed",
+      daasStatus: acceptedWithoutRequiredEvidence && response.ok && daasMissionId
+        ? DAAS_MISSION_EVIDENCE_REQUIRED_STATUS
+        : "daas_mission_handoff_failed",
       daasMissionId,
+      evidenceUrl,
       httpStatus: response.status,
       faked: false,
     };
@@ -332,6 +436,7 @@ export async function postInfrastructureTicketToDaasAdapter(input: {
     ok: classification === "routed_accepted",
     daasStatus: status ?? classification,
     daasMissionId,
+    evidenceUrl,
     httpStatus: response.status,
     faked: false,
   };
@@ -346,6 +451,11 @@ export interface PersistedDaasMissionState {
   outcome: DaasMissionRoutingOutcome;
   ok: boolean;
   executionAuthority: "daas";
+  /**
+   * DAAS-provided evidence/proof link (http(s) only). Required before an
+   * accepted DAAS handoff can become runnable Paperclip provenance.
+   */
+  evidenceUrl: string | null;
   httpStatus: number;
   signals: string[];
   routedAt: string;
@@ -359,8 +469,21 @@ type PaperclipDaasRouteStatus =
 
 function classifyPaperclipDaasRouteStatus(mission: PersistedDaasMissionState): PaperclipDaasRouteStatus {
   if (mission.outcome === "pending_daas_route") return "pending_daas_route";
-  if (mission.ok && mission.outcome === "routed_accepted") return "routed_to_daas";
+  if (hasAcknowledgedDaasMission(mission)) return "routed_to_daas";
   return mission.status === "blocked_by_policy" ? "blocked_by_policy" : "daas_route_failed";
+}
+
+function configuredDaasEvidenceOrigin(): string | null {
+  return resolveDaasMissionAdapterUrl()?.origin ?? null;
+}
+
+function hasAcknowledgedDaasMission(mission: PersistedDaasMissionState): boolean {
+  const origin = configuredDaasEvidenceOrigin();
+  return Boolean(mission.missionId) &&
+    Boolean(origin) &&
+    Boolean(readSafeEvidenceUrl(mission.evidenceUrl, origin, mission.missionId)) &&
+    mission.outcome === "routed_accepted" &&
+    mission.ok;
 }
 
 export interface PendingDaasMissionRouteInput {
@@ -437,6 +560,7 @@ export function summarizeDaasMissionRouting(
     outcome: result.outcome,
     ok: result.ok,
     executionAuthority: "daas",
+    evidenceUrl: result.evidenceUrl,
     httpStatus: result.httpStatus,
     signals: options.signals,
     routedAt: options.routedAt.toISOString(),
@@ -458,35 +582,53 @@ function readPersistedDaasMissionState(value: unknown): PersistedDaasMissionStat
 	      ? { type: targetType as DaasMissionTarget["type"], id: targetId }
 	      : undefined;
 	  const status = readNonEmptyString(mission?.status);
-  const outcome = readNonEmptyString(mission?.outcome);
-  const route = readNonEmptyString(mission?.route);
-  const executionAuthority = readNonEmptyString(mission?.executionAuthority);
-  const statusClassification = status === "pending_daas_route"
-    ? "pending_daas_route"
-    : classifyDaasMissionStatus(status);
-  if (
-	    !status ||
-	    !requestFingerprint ||
-	    target === undefined ||
-	    !outcome ||
-    route !== DAAS_MISSION_DESTINATION_ROUTE ||
-    executionAuthority !== "daas" ||
-    statusClassification !== outcome ||
-    !["pending_daas_route", "routed_accepted", "routed_surfaced"].includes(outcome)
-  ) {
-    return null;
-  }
-  if (outcome === "routed_accepted" && !missionId) return null;
-  return {
+	  const outcome = readNonEmptyString(mission?.outcome);
+	  const route = readNonEmptyString(mission?.route);
+	  const executionAuthority = readNonEmptyString(mission?.executionAuthority);
+  const validOutcome = [
+    "pending_daas_route",
+    "routed_accepted",
+    "routed_surfaced",
+    "adapter_unavailable",
+    "handoff_failed",
+  ].includes(outcome ?? "");
+	  const statusClassification = status === "pending_daas_route"
+	    ? "pending_daas_route"
+	    : classifyDaasMissionStatus(status);
+  const statusMatchesOutcome =
+    outcome === "adapter_unavailable" ||
+    outcome === "handoff_failed" ||
+    statusClassification === outcome;
+	  if (
+		    !status ||
+		    !requestFingerprint ||
+		    target === undefined ||
+		    !outcome ||
+	    route !== DAAS_MISSION_DESTINATION_ROUTE ||
+	    executionAuthority !== "daas" ||
+	    !validOutcome ||
+	    !statusMatchesOutcome
+	  ) {
+	    return null;
+	  }
+  const origin = configuredDaasEvidenceOrigin();
+  const evidenceUrl = origin ? readSafeEvidenceUrl(mission.evidenceUrl, origin, missionId) : null;
+	  if (outcome === "routed_accepted" && (!missionId || !evidenceUrl)) return null;
+  const httpStatus = typeof mission.httpStatus === "number" ? mission.httpStatus : 0;
+  const acceptedHttpStatus = httpStatus >= 200 && httpStatus < 300;
+  if (outcome === "routed_accepted" && !acceptedHttpStatus) return null;
+  if ((outcome === "adapter_unavailable" || outcome === "handoff_failed") && mission.ok === true) return null;
+	  return {
 	    route,
 	    missionId,
 	    requestFingerprint,
 	    target,
     status,
     outcome: outcome as DaasMissionRoutingOutcome,
-    ok: mission.ok === true && outcome === "routed_accepted",
+    ok: mission.ok === true && outcome === "routed_accepted" && Boolean(missionId) && Boolean(evidenceUrl),
     executionAuthority: "daas",
-    httpStatus: typeof mission.httpStatus === "number" ? mission.httpStatus : 0,
+    evidenceUrl,
+    httpStatus,
     signals: Array.isArray(mission.signals)
       ? mission.signals.filter((entry): entry is string => typeof entry === "string")
       : [],
@@ -524,6 +666,7 @@ function buildPendingDaasMissionRoute(input: PendingDaasMissionRouteInput): Pers
     outcome: "pending_daas_route",
     ok: false,
     executionAuthority: "daas",
+    evidenceUrl: null,
     httpStatus: 0,
     signals: input.signals,
     routedAt: new Date().toISOString(),
@@ -559,6 +702,7 @@ export function buildPendingDaasMissionExecutionState(
     outcome: "pending_daas_route" as const,
     ok: false,
     executionAuthority: "daas" as const,
+    evidenceUrl: null,
     httpStatus: 0,
     signals: input.signals,
     routedAt: new Date().toISOString(),
@@ -646,10 +790,7 @@ export function buildDaasMissionExecutionState(
   previousState: Record<string, unknown> | null | undefined,
   mission: PersistedDaasMissionState,
 ): Record<string, unknown> {
-  const missionWasAcknowledged =
-    Boolean(mission.missionId) &&
-    mission.outcome === "routed_accepted" &&
-    mission.ok;
+  const missionWasAcknowledged = hasAcknowledgedDaasMission(mission);
 
   const nextState: Record<string, unknown> = {
     ...(previousState ?? {}),
@@ -747,6 +888,7 @@ export async function routeInfrastructureTicketThroughDaasAdapter(
         ok: existingMission.ok,
         daasStatus: existingMission.status,
         daasMissionId: existingMission.missionId,
+        evidenceUrl: existingMission.evidenceUrl,
         httpStatus: existingMission.httpStatus,
         faked: false,
       };
@@ -773,6 +915,7 @@ export async function routeInfrastructureTicketThroughDaasAdapter(
         ok: false,
         daasStatus: "daas_mission_adapter_unavailable",
         daasMissionId: null,
+        evidenceUrl: null,
         httpStatus: 0,
         faked: false,
       };

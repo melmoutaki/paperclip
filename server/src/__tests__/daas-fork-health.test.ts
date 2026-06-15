@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertDaasForkHealthSafe,
@@ -70,5 +71,17 @@ describe("DAAS fork health status", () => {
 
     expect(status.safe).toBe(false);
     expect(() => assertDaasForkHealthSafe(status)).toThrow(/process-adapter-ssh-command/);
+  });
+
+  it("documents the frontend-safe DAAS origin in the sidecar Docker build and runtime env", () => {
+    const dockerfile = readFileSync(new URL("../../../Dockerfile", import.meta.url), "utf8");
+    const compose = readFileSync(
+      new URL("../../../docker/docker-compose.daas-sidecar.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(dockerfile).toContain("ARG VITE_DAAS_BASE_URL");
+    expect(dockerfile).toContain("ENV VITE_DAAS_BASE_URL=${VITE_DAAS_BASE_URL}");
+    expect(compose).toContain('VITE_DAAS_BASE_URL: "${VITE_DAAS_BASE_URL:-http://host.docker.internal:8000}"');
   });
 });

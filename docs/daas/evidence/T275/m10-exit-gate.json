@@ -1,0 +1,202 @@
+{
+  "$comment": "T275 M10 exit-gate record. This is an ACCEPTANCE artifact, not a signed .gate/records HMAC gate. The originally-reported evidence-link blocker is closed in code for the Paperclip-fork contract: limited-agent route exposes and persists a safe DAAS evidence link, the mission adapter persists it, the UI renders it, and a non-secret DAAS-origin URL-safety contract is enforced in route parsing, server persistence, and UI render. Accepted handoffs without safe evidence fail closed. Focused tests passed for each. Verdict is PASS for the Paperclip-fork contract.",
+  "milestone": "M10",
+  "task": "T275",
+  "fork": "daas",
+  "evaluated_at_base_sha": "36536ae7",
+  "verdict": "PASS",
+  "verdict_scope": "paperclip_fork_contract",
+  "verdict_basis": "evidence_link_route_exposure_implemented + evidence_link_persistence_implemented + non_secret_url_safety_enforced (route + server + UI) + focused_tests_passed + prior_GO_gates",
+  "fork_contract_proven": true,
+  "accepted_handoff_requires_safe_evidence": true,
+  "fix_summary": {
+    "scope": "T275 evidence-link route exposure + capture/persistence + non-secret URL-safety contract + UI render contract; accepted DAAS handoffs without safe evidence fail closed and never receive DAAS-route provenance.",
+    "server_changes": [
+      "daas-integrations.ts handoffMissionToDaas now parses a safe DAAS evidence link via parseDaasEvidenceUrl and the limited-agent route POST /api/integrations/paperclip/missions exposes it as evidenceUrl on accepted responses and persists it to the issue when issueId is supplied; accepted responses lacking safe evidence return daas_mission_evidence_required instead of 202.",
+      "readSafeEvidenceUrl hardened: a non-secret evidence link is an absolute http(s) URL from the expected DAAS origin with a bounded evidence/proof path, NO userinfo, NO query string, and NO fragment; fails closed on javascript:/file:/data:/relative/non-string, cross-origin, path-token, and userinfo/query/fragment-bearing URLs. Exported and reused for server persistence read-back.",
+      "PersistedDaasMissionState / DaasMissionAdapterDispatchResult carry evidenceUrl: string | null; parseDaasEvidenceUrl reads evidence_url/evidenceUrl, evidence.{link,url,href}, links.{evidence,evidence_url,evidenceUrl} at envelope and data levels.",
+      "postInfrastructureTicketToDaasAdapter requires a safe evidenceUrl before returning ok=true for routed_accepted; summarizeDaasMissionRouting -> buildDaasMissionExecutionState persist evidenceUrl into issue.executionState.daasMission, and buildDaasMissionExecutionState sets DAAS-route provenance only when missionId + routed_accepted + ok + readSafeEvidenceUrl(evidenceUrl) are all present."
+    ],
+    "ui_changes": [
+      "ui/src/lib/daas-mission-output.ts normalizeEvidenceUrl hardened to the same non-secret contract (absolute http(s); no userinfo/query/fragment) so a tampered persisted state cannot render a sensitive-material-bearing link.",
+      "DaasMissionStatusCard.tsx renders the 'DAAS evidence' link from the persisted field; tests added for render-on-safe, no-render-on-none, and drop-on-unsafe."
+    ]
+  },
+  "verification_status": "focused_checks_passed",
+  "verification_note": "The focused server regression suite, focused UI suite, server typecheck, JSON parse, and git diff whitespace check passed in the T275 worktree. Fresh external check logs for the current reviewed commit are generated outside the authored diff at /tmp/daas-gate-verification/T275/current/ for reviewer inspection.",
+  "executed_checks": [
+    {
+      "command": "COREPACK_HOME=/tmp/corepack XDG_DATA_HOME=/tmp/xdg-data PNPM_HOME=/tmp/pnpm-home npm_config_cache=/tmp/npm-cache VITEST_CACHE_DIR=/tmp/paperclip-server-vitest-cache pnpm --filter @paperclipai/server exec vitest run src/__tests__/daas-fork-security-regression.test.ts src/__tests__/daas-fork-health.test.ts src/__tests__/daas-integrations.test.ts src/__tests__/daas-mission-adapter.test.ts --configLoader runner --pool=forks --fileParallelism=false --cache=false --reporter=verbose",
+      "scope": "evidence_link_route_exposure + url_safety + persistence + regression",
+      "result": "PASS",
+      "summary": "4 files passed; 88 tests passed with --configLoader runner and writable /tmp Vitest cache. Route exposes and persists evidenceUrl on accepted response; authenticates scoped local agent JWTs; validates persisted low-trust agent permission and rejects spoofed request permissions; rejects mismatched JWT company/agent scope; requires issueId and validates issue existence/assignee before DAAS handoff so accepted missions have durable assigned-issue state; uses a stable limited-route mission id and DAAS idempotency key for duplicate requests; preserves existing issue execution state while adding DAAS provenance; documents and statically covers Docker-provided VITE_DAAS_BASE_URL for the served UI; accepts shared DAAS in-progress statuses with safe evidence; ok:false envelopes fail closed; non-2xx accepted-looking DAAS adapter responses and persisted accepted states fail closed; accepted responses without safe evidence fail closed; cross-origin/wrong-mission/path-token unsafe evidence is rejected; unsafe evidence cannot mint route provenance; negative DAAS states round-trip for audit read-back; persistence round-trips a safe URL and drops unsafe ones."
+    },
+    {
+      "command": "COREPACK_HOME=/tmp/corepack XDG_DATA_HOME=/tmp/xdg-data PNPM_HOME=/tmp/pnpm-home npm_config_cache=/tmp/npm-cache VITEST_CACHE_DIR=/tmp/paperclip-ui-vitest-cache pnpm --filter @paperclipai/ui exec vitest run src/components/issue-output/IssueOutputSection.test.tsx src/components/issue-output/DaasMissionStatusCard.test.tsx --configLoader runner --cache=false --reporter=verbose",
+      "scope": "evidence_link_ui_render + ui_url_safety",
+      "result": "PASS",
+      "summary": "2 files passed; 16 tests passed with --configLoader runner and writable /tmp Vitest cache. IssueOutputSection and DaasMissionStatusCard render links on safe configured DAAS URLs; render no link on none; accept server-sanitized DAAS evidence URLs from configured non-example origins; fail closed when no public frontend DAAS base is configured; drop userinfo/token/fragment/non-http(s) URLs."
+    },
+    {
+      "command": "COREPACK_HOME=/tmp/corepack XDG_DATA_HOME=/tmp/xdg-data PNPM_HOME=/tmp/pnpm-home npm_config_cache=/tmp/npm-cache pnpm --filter @paperclipai/server typecheck",
+      "scope": "typecheck",
+      "result": "PASS"
+    },
+    {
+      "command": "JSON parse of docs/daas/evidence/T275/*.json",
+      "scope": "artifact_validation",
+      "result": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "scope": "whitespace_validation",
+      "result": "PASS"
+    }
+  ],
+  "static_checks": [
+    {
+      "command": "JSON parse of docs/daas/evidence/T275/*.json",
+      "result": "PASS",
+      "scope": "artifact_validation",
+      "summary": "phase-0b-scenario.json and m10-exit-gate.json are valid JSON"
+    },
+    {
+      "command": "secret scan of changed T275 artifacts",
+      "result": "PASS",
+      "scope": "artifact_validation",
+      "summary": "no unredacted secrets; only <REDACTED_*> placeholders and synthetic hosts/ids"
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "requirement": "limited agent creates a DAAS mission via the adapter",
+      "result": "PASS",
+      "evidence_step": "1-create-mission"
+    },
+    {
+      "id": "AC2",
+      "requirement": "same agent denied direct SSH, raw shell, secret access",
+      "result": "PASS",
+      "evidence_step": "2-deny-direct-access"
+    },
+    {
+      "id": "AC3",
+      "requirement": "DAAS is authoritative final status source AND limited agent receives a DAAS evidence link",
+      "result": "PASS",
+      "result_scope": "paperclip_fork_contract",
+      "evidence_step": "3-daas-authoritative-status",
+      "note": "Status authority has regression coverage. Evidence-link receipt is now exposed on the limited-agent route (evidenceUrl), persisted in PersistedDaasMissionState, and rendered in the UI, under a non-secret URL-safety contract; focused server + UI tests passed for each. Accepted DAAS handoffs without safe evidence fail closed with daas_mission_evidence_required."
+    },
+    {
+      "id": "AC4",
+      "requirement": "no-proof/no-success: agent success text cannot override missing/failing proof",
+      "result": "PASS",
+      "evidence_step": "4-no-proof-no-success",
+      "note": "Accepted handoffs require mission id, accepted/running DAAS status, and safe evidenceUrl before ok/provenance can be set; agent text alone remains ignored."
+    },
+    {
+      "id": "AC5",
+      "requirement": "evidence contains no unredacted secrets",
+      "result": "PASS",
+      "evidence_step": "5-no-unredacted-secrets"
+    },
+    {
+      "id": "AC6",
+      "requirement": "M10 exit gate is pass/fail with traceability to the fork patch series",
+      "result": "PASS",
+      "evidence_step": "this record",
+      "note": "Gate is decided and traceable; the controlling blocker is fixed in code with focused tests passed."
+    }
+  ],
+  "blocker": {
+    "id": "T275-BLOCKER-evidence-link-persistence",
+    "status": "RESOLVED",
+    "summary": "The acceptance clause 'limited agent receives a DAAS evidence link' is closed in code for the Paperclip-fork contract: the limited-agent route authenticates a scoped agent JWT, exposes a safe evidence link, the mission adapter persists it, the UI renders it, accepted handoffs without safe evidence fail closed, all under a non-secret URL-safety contract; focused tests passed for each.",
+    "original_root_cause": [
+      "The limited-agent route (daas-integrations.ts handoffMissionToDaas) parsed only mission id/status and never returned a DAAS evidence link; the new evidence handling lived only in daas-mission-adapter.ts.",
+      "URL validation was scheme-only, so http(s) URLs with userinfo, query strings, or fragments would have passed (violating the no-sensitive-material invariant).",
+      "PersistedDaasMissionState had no evidenceUrl/evidence/links field originally; UI read evidence-url fields the backend never populated.",
+      "Earlier drafts used a synthetic placeholder URL, which is not acceptance proof."
+    ],
+    "resolution": [
+      "daas-integrations.ts: handoffMissionToDaas parses a safe evidence link (parseDaasEvidenceUrl) and POST /api/integrations/paperclip/missions exposes it as evidenceUrl on accepted responses; accepted responses without safe evidence fail closed with daas_mission_evidence_required.",
+      "readSafeEvidenceUrl hardened and exported: absolute http(s) only, NO userinfo credentials, NO query string, NO fragment; fails closed otherwise. Reused by route parse, server persistence read-back (readDaasMissionState), and mirrored in UI normalizeEvidenceUrl.",
+      "evidenceUrl persisted via postInfrastructureTicketToDaasAdapter -> summarizeDaasMissionRouting -> buildDaasMissionExecutionState into issue.executionState.daasMission; re-validated on read.",
+      "Tests passed: route exposes evidenceUrl on accepted handoff, accepted handoffs without safe evidence fail closed, userinfo/query/fragment rejection (daas-mission-adapter.test.ts parseDaasEvidenceUrl block), persistence round-trip, and UI render/drop (DaasMissionStatusCard.test.tsx)."
+    ],
+    "remaining": [],
+    "required_to_clear": "Paperclip-fork contract is clear; validator GO remains required before merge."
+  },
+  "traceability": {
+    "fork_patch_tickets_present": [
+      {
+        "task": "T256",
+        "verdict": "GO",
+        "reviewed_sha": "665b6bb097309b12bb35870ba993de399108aa19",
+        "title": "DAAS AgentOps permission guardrails / infra restricted to DAAS adapter"
+      },
+      {
+        "task": "T257",
+        "verdict": "GO",
+        "reviewed_sha": "deb826cc4d4ded92c724271588d90ad6a5fc437b",
+        "title": "Hide/deny direct SSH, raw shell, secret, unrestricted infra connectors"
+      },
+      {
+        "task": "T258",
+        "verdict": "GO",
+        "reviewed_sha": "c9a8c6ffcd22a7b7c892cd4b7309fd39dc55e119",
+        "title": "Policy guard: infra tasks must route through /api/integrations/paperclip/missions"
+      },
+      {
+        "task": "T259",
+        "verdict": "GO",
+        "reviewed_sha": "98d3bff17840564123a6be8f779fc5773e5a002b",
+        "title": "Disable telemetry and non-required outbound integrations by default"
+      },
+      {
+        "task": "T260",
+        "verdict": "GO",
+        "reviewed_sha": "d2b1c84f9c9e9efe0c7475c7a378d1964da08ce6",
+        "title": "Startup/health check: fork version, telemetry, dangerous-connector-disabled state"
+      },
+      {
+        "task": "T261",
+        "verdict": "GO",
+        "reviewed_sha": "a1d0d253cdf878153101b730d7ff17182dd542ef",
+        "title": "DAAS sidecar Compose deployment"
+      },
+      {
+        "task": "T269",
+        "verdict": "GO",
+        "reviewed_sha": "17011b6e447b0796ff4bad5c71d2bcee6e3368f2",
+        "title": "Route infra tickets through DAAS mission adapter, no internal execution"
+      },
+      {
+        "task": "T270",
+        "verdict": "GO",
+        "reviewed_sha": "39b16705a7f95cf582f2594072bec8744432c076",
+        "title": "Work-product UI: DAAS mission status + evidence link authoritative"
+      },
+      {
+        "task": "T274",
+        "verdict": "GO",
+        "reviewed_sha": "e4c3604df13922c3ef61497fb689c2816e56df32",
+        "title": "Fork security regression test suite"
+      }
+    ],
+    "range_tickets_not_in_fork": {
+      "tasks": [
+        "T251-T255",
+        "T262-T268",
+        "T271-T273"
+      ],
+      "finding": "Not present in this Paperclip fork's patch series (no commits, no gate records). Treated as DAAS-control-plane or planning tickets outside the Paperclip-fork boundary. Documented as a traceability note."
+    }
+  },
+  "limitations": [
+    "The archived walkthrough is deterministic and redacted. It traces to route behavior, tests, and gate records without storing real hosts or secret material.",
+    "Focused tests passed in this worktree; the validator gate remains the independent merge requirement.",
+    "Accepted handoffs require a safe non-secret http(s) evidence URL. The Paperclip fork parses, persists, and renders such a URL, and rejects userinfo/query/fragment-bearing URLs."
+  ]
+}

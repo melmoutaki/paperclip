@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DAAS_PAPERCLIP_MISSIONS_ROUTE } from "@paperclipai/shared";
 import {
   buildDaasMissionRequestFingerprint,
+  buildDaasMissionExecutionState,
   buildDaasMissionPrompt,
   enforceInfrastructureTicketRouting,
+  parseDaasEvidenceUrl,
   persistPendingDaasMissionRouteOnIssue,
   postInfrastructureTicketToDaasAdapter,
   readDaasInfrastructureIntentState,
+  readDaasMissionState,
   resolveDaasMissionAdapterUrl,
   resolveDaasMissionTarget,
   routeInfrastructureTicketThroughDaasAdapter,
@@ -167,7 +170,14 @@ describe("resolveDaasMissionTarget", () => {
     process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
     process.env["PAPERCLIP_WEBHOOK_SECRET"] = "webhook-secret";
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, data: { daas_mission_id: "mis_daas_1", status: "waiting_for_lock" } }), {
+      new Response(JSON.stringify({
+        ok: true,
+        data: {
+          daas_mission_id: "mis_daas_1",
+          status: "waiting_for_lock",
+          evidence_url: "https://daas.example.test/missions/mis_daas_1/evidence",
+        },
+      }), {
         status: 201,
         headers: { "content-type": "application/json" },
       }),
@@ -337,7 +347,11 @@ describe("resolveDaasMissionTarget", () => {
     process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
     delete process.env.PAPERCLIP_WEBHOOK_SECRET;
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ missionId: "mis_daas_1", status: "handoff_accepted" }), {
+      new Response(JSON.stringify({
+        missionId: "mis_daas_1",
+        status: "handoff_accepted",
+        evidence_url: "https://daas.example.test/missions/mis_daas_1/evidence",
+      }), {
         status: 202,
         headers: { "content-type": "application/json" },
       }),
@@ -416,6 +430,336 @@ describe("resolveDaasMissionTarget", () => {
       daasMissionId: "mis_daas_1",
     });
   });
+
+  it("fails closed when a non-2xx DAAS response carries an accepted-looking body with evidence", async () => {
+    process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
+    process.env["PAPERCLIP_WEBHOOK_SECRET"] = "webhook-secret";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({
+          ok: true,
+          data: {
+            daas_mission_id: "mis_daas_1",
+            status: "accepted",
+            evidence_url: "https://daas.example.test/missions/mis_daas_1/evidence",
+          },
+        }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+
+    const result = await postInfrastructureTicketToDaasAdapter(args());
+
+    expect(result).toMatchObject({
+      outcome: "handoff_failed",
+      ok: false,
+      daasStatus: "daas_mission_handoff_failed",
+      daasMissionId: "mis_daas_1",
+      evidenceUrl: "https://daas.example.test/missions/mis_daas_1/evidence",
+      httpStatus: 500,
+    });
+  });
+
+  it("captures a DAAS-provided http(s) evidence url from an accepted response", async () => {
+    process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
+    process.env["PAPERCLIP_WEBHOOK_SECRET"] = "webhook-secret";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              daas_mission_id: "mis_daas_1",
+              status: "running",
+              evidence_url: "https://daas.example.test/missions/mis_daas_1/evidence",
+            },
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await postInfrastructureTicketToDaasAdapter(args());
+
+    expect(result).toMatchObject({
+      outcome: "routed_accepted",
+      ok: true,
+      daasMissionId: "mis_daas_1",
+      evidenceUrl: "https://daas.example.test/missions/mis_daas_1/evidence",
+    });
+  });
+
+  it("rejects an accepted DAAS response with an unsafe evidence url, failing closed", async () => {
+    process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
+    process.env["PAPERCLIP_WEBHOOK_SECRET"] = "webhook-secret";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              daas_mission_id: "mis_daas_1",
+              status: "running",
+              evidence_url: "javascript:alert(1)",
+            },
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await postInfrastructureTicketToDaasAdapter(args());
+
+    expect(result).toMatchObject({
+      outcome: "handoff_failed",
+      ok: false,
+      daasStatus: "daas_mission_evidence_required",
+      evidenceUrl: null,
+    });
+  });
+
+  it("captures a surfaced mission's evidence url from the links/evidence shape", async () => {
+    process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
+    process.env["PAPERCLIP_WEBHOOK_SECRET"] = "webhook-secret";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              daas_mission_id: "mis_daas_1",
+              status: "blocked_by_policy",
+              links: { evidence: "https://daas.example.test/missions/mis_daas_1/evidence" },
+            },
+          }),
+          { status: 403, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await postInfrastructureTicketToDaasAdapter(args());
+
+    expect(result).toMatchObject({
+      outcome: "routed_surfaced",
+      ok: false,
+      evidenceUrl: "https://daas.example.test/missions/mis_daas_1/evidence",
+    });
+  });
+});
+
+describe("parseDaasEvidenceUrl", () => {
+  it("reads common DAAS evidence field shapes and accepts only http(s)", () => {
+    expect(parseDaasEvidenceUrl(null, { evidence_url: "https://d.example.test/missions/mis_1/evidence" }, null, "mis_1")).toBe(
+      "https://d.example.test/missions/mis_1/evidence",
+    );
+    expect(parseDaasEvidenceUrl(null, { evidenceUrl: "http://localhost:9000/missions/mis_1/e" }, null, "mis_1")).toBe(
+      "http://localhost:9000/missions/mis_1/e",
+    );
+    expect(parseDaasEvidenceUrl(null, { evidence: { link: "https://d.example.test/api/missions/mis_1/evidence" } }, null, "mis_1")).toBe(
+      "https://d.example.test/api/missions/mis_1/evidence",
+    );
+    expect(parseDaasEvidenceUrl(null, { evidence: { href: "https://d.example.test/missions/mis_1/proof" } }, null, "mis_1")).toBe(
+      "https://d.example.test/missions/mis_1/proof",
+    );
+    expect(parseDaasEvidenceUrl(null, { links: { evidenceUrl: "https://d.example.test/missions/mis_1/evidence" } }, null, "mis_1")).toBe(
+      "https://d.example.test/missions/mis_1/evidence",
+    );
+    expect(parseDaasEvidenceUrl({ evidence_url: "https://d.example.test/missions/mis_1/evidence" }, null, null, "mis_1")).toBe(
+      "https://d.example.test/missions/mis_1/evidence",
+    );
+  });
+
+  it("fails closed on unsafe schemes, relative paths, and missing values", () => {
+    for (const unsafe of [
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "data:text/html,<script>",
+      "/relative/evidence",
+      "ftp://daas.example.test/e",
+      "not a url",
+      "",
+    ]) {
+      expect(parseDaasEvidenceUrl(null, { evidence_url: unsafe })).toBeNull();
+    }
+    expect(parseDaasEvidenceUrl(null, null)).toBeNull();
+    expect(parseDaasEvidenceUrl(null, { status: "running" })).toBeNull();
+  });
+
+  it("rejects http(s) urls carrying userinfo, query, or fragment components", () => {
+    for (const unsafe of [
+      "https://user-info@daas.example.test/evidence",
+      "https://daas.example.test/evidence?ref=opaque",
+      "https://daas.example.test/evidence#section",
+    ]) {
+      expect(parseDaasEvidenceUrl(null, { evidence_url: unsafe })).toBeNull();
+    }
+  });
+
+  it("rejects cross-origin evidence urls, wrong mission ids, and extra path-token segments when an origin is required", () => {
+    expect(parseDaasEvidenceUrl(
+      null,
+      { evidence_url: "https://not-daas.example.test/missions/mis_1/evidence" },
+      "https://daas.example.test",
+      "mis_1",
+    )).toBeNull();
+    expect(parseDaasEvidenceUrl(
+      null,
+      { evidence_url: "https://daas.example.test/missions/mis_1/evidence/opaque" },
+      "https://daas.example.test",
+      "mis_1",
+    )).toBeNull();
+    expect(parseDaasEvidenceUrl(
+      null,
+      { evidence_url: "https://daas.example.test/token-or-secret/evidence" },
+      "https://daas.example.test",
+      "mis_1",
+    )).toBeNull();
+    expect(parseDaasEvidenceUrl(
+      null,
+      { evidence_url: "https://daas.example.test/missions/mis_other/evidence" },
+      "https://daas.example.test",
+      "mis_1",
+    )).toBeNull();
+    expect(parseDaasEvidenceUrl(
+      null,
+      { evidence_url: "https://daas.example.test/missions/mis_1/evidence" },
+      "https://daas.example.test",
+      "mis_1",
+    )).toBe("https://daas.example.test/missions/mis_1/evidence");
+  });
+});
+
+describe("buildDaasMissionExecutionState", () => {
+  it("does not mint DAAS route provenance from an unsafe evidence url even when ok is true", () => {
+    const state = buildDaasMissionExecutionState(null, {
+      route: "/api/missions",
+      missionId: "mis_unsafe_provenance",
+      requestFingerprint: routeFingerprint(),
+      target: { type: "server", id: "srv_1" },
+      status: "accepted",
+      outcome: "routed_accepted",
+      ok: true,
+      executionAuthority: "daas",
+      evidenceUrl: "https://user-info@daas.example.test/missions/mis_unsafe_provenance/evidence",
+      httpStatus: 202,
+      signals: ["infra.orchestration"],
+      routedAt: new Date(0).toISOString(),
+    });
+
+    expect(state.daasRouteStatus).toBe("daas_route_failed");
+    expect(state.daasMissionRouted).toBeUndefined();
+    expect(state.daasMissionId).toBeUndefined();
+  });
+});
+
+describe("readDaasMissionState", () => {
+  function persistedMission(overrides: Record<string, unknown>) {
+    return {
+      daasMission: {
+        route: "/api/missions",
+        missionId: null,
+        requestFingerprint: routeFingerprint(),
+        target: { type: "server", id: "srv_1" },
+        status: "daas_mission_handoff_failed",
+        outcome: "handoff_failed",
+        ok: false,
+        executionAuthority: "daas",
+        evidenceUrl: null,
+        httpStatus: 409,
+        signals: ["infra.orchestration"],
+        routedAt: new Date(0).toISOString(),
+        ...overrides,
+      },
+    };
+  }
+
+  it("round-trips daas_mission_evidence_required fail-closed state for audit read-back", () => {
+    const state = readDaasMissionState(persistedMission({
+      missionId: "mis_missing_evidence",
+      status: "daas_mission_evidence_required",
+      outcome: "handoff_failed",
+      evidenceUrl: null,
+    }));
+
+    expect(state).toMatchObject({
+      missionId: "mis_missing_evidence",
+      status: "daas_mission_evidence_required",
+      outcome: "handoff_failed",
+      ok: false,
+      evidenceUrl: null,
+    });
+  });
+
+  it("round-trips generic handoff_failed state for audit read-back", () => {
+    const state = readDaasMissionState(persistedMission({
+      missionId: "mis_failed",
+      status: "daas_mission_handoff_failed",
+      outcome: "handoff_failed",
+      httpStatus: 502,
+    }));
+
+    expect(state).toMatchObject({
+      missionId: "mis_failed",
+      status: "daas_mission_handoff_failed",
+      outcome: "handoff_failed",
+      ok: false,
+      httpStatus: 502,
+    });
+  });
+
+  it("round-trips adapter_unavailable state for audit read-back", () => {
+    const state = readDaasMissionState(persistedMission({
+      status: "daas_mission_adapter_unavailable",
+      outcome: "adapter_unavailable",
+      httpStatus: 0,
+    }));
+
+    expect(state).toMatchObject({
+      missionId: null,
+      status: "daas_mission_adapter_unavailable",
+      outcome: "adapter_unavailable",
+      ok: false,
+      httpStatus: 0,
+    });
+  });
+
+  it("rejects negative terminal persisted states that claim ok true", () => {
+    expect(readDaasMissionState(persistedMission({
+      status: "daas_mission_handoff_failed",
+      outcome: "handoff_failed",
+      ok: true,
+    }))).toBeNull();
+  });
+
+  it("rejects accepted persisted states with cross-origin evidence urls", () => {
+    process.env["DAAS_BASE_URL"] = "https://daas.example.test";
+    expect(readDaasMissionState(persistedMission({
+      missionId: "mis_cross_origin",
+      status: "accepted",
+      outcome: "routed_accepted",
+      ok: true,
+      evidenceUrl: "https://attacker.example.test/missions/mis_cross_origin/evidence",
+      httpStatus: 202,
+    }))).toBeNull();
+  });
+
+  it("rejects accepted persisted states with a non-2xx HTTP status", () => {
+    process.env["DAAS_BASE_URL"] = "https://daas.example.test";
+    expect(readDaasMissionState(persistedMission({
+      missionId: "mis_http_failure",
+      status: "accepted",
+      outcome: "routed_accepted",
+      ok: true,
+      evidenceUrl: "https://daas.example.test/missions/mis_http_failure/evidence",
+      httpStatus: 500,
+    }))).toBeNull();
+  });
 });
 
 describe("routeInfrastructureTicketThroughDaasAdapter", () => {
@@ -482,7 +826,11 @@ describe("routeInfrastructureTicketThroughDaasAdapter", () => {
     process.env["DAAS_BASE_URL"] = "https://daas.example.test";
     process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ missionId: "mis_after_commit", status: "handoff_accepted" }), {
+      new Response(JSON.stringify({
+        missionId: "mis_after_commit",
+        status: "handoff_accepted",
+        evidence_url: "https://daas.example.test/missions/mis_after_commit/evidence",
+      }), {
         status: 202,
         headers: { "content-type": "application/json" },
       }),
@@ -525,6 +873,7 @@ describe("routeInfrastructureTicketThroughDaasAdapter", () => {
       missionId: "mis_after_commit",
       status: "handoff_accepted",
       outcome: "routed_accepted",
+      evidenceUrl: "https://daas.example.test/missions/mis_after_commit/evidence",
     });
     expect(persisted.executionState.daasMissionRouted).toMatchObject({
       route: DAAS_PAPERCLIP_MISSIONS_ROUTE,
@@ -532,11 +881,100 @@ describe("routeInfrastructureTicketThroughDaasAdapter", () => {
     });
   });
 
+  it("persists a DAAS evidence url into executionState.daasMission for the UI to render", async () => {
+    process.env["DAAS_BASE_URL"] = "https://daas.example.test";
+    process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          missionId: "mis_with_evidence",
+          status: "accepted",
+          evidence_url: "https://daas.example.test/missions/mis_with_evidence/evidence",
+        }),
+        { status: 202, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { db, updateSet } = createFakeDb({ issueRow: { executionState: null } });
+
+    const routed = await routeInfrastructureTicketThroughDaasAdapter(db as never, {
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      title: INFRA_TICKET.title,
+      description: INFRA_TICKET.description,
+      target: { type: "server", id: "srv_1" },
+      signals: ["infra.orchestration"],
+    });
+
+    expect(routed.dispatch).toMatchObject({
+      ok: true,
+      daasMissionId: "mis_with_evidence",
+      evidenceUrl: "https://daas.example.test/missions/mis_with_evidence/evidence",
+    });
+    const persisted = updateSet.mock.calls[0][0] as { executionState: Record<string, unknown> };
+    expect(persisted.executionState.daasMission).toMatchObject({
+      missionId: "mis_with_evidence",
+      status: "accepted",
+      outcome: "routed_accepted",
+      evidenceUrl: "https://daas.example.test/missions/mis_with_evidence/evidence",
+    });
+    // The persisted state round-trips through the reader the issue load path uses.
+    expect(readDaasMissionState(persisted.executionState)?.evidenceUrl).toBe(
+      "https://daas.example.test/missions/mis_with_evidence/evidence",
+    );
+  });
+
+  it("omits an unsafe DAAS evidence url from the persisted mission state", async () => {
+    process.env["DAAS_BASE_URL"] = "https://daas.example.test";
+    process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            missionId: "mis_unsafe_evidence",
+            status: "accepted",
+            evidence: { url: "file:///etc/passwd" },
+          }),
+          { status: 202, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    const { db, updateSet } = createFakeDb({ issueRow: { executionState: null } });
+
+    await routeInfrastructureTicketThroughDaasAdapter(db as never, {
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      title: INFRA_TICKET.title,
+      description: INFRA_TICKET.description,
+      target: { type: "server", id: "srv_1" },
+      signals: ["infra.orchestration"],
+    });
+
+    const persisted = updateSet.mock.calls[0][0] as { status?: string; executionState: Record<string, unknown> };
+    expect(persisted.status).toBe("blocked");
+    expect(persisted.executionState.daasMission).toMatchObject({
+      missionId: "mis_unsafe_evidence",
+      status: "daas_mission_evidence_required",
+      outcome: "handoff_failed",
+      ok: false,
+      evidenceUrl: null,
+    });
+    expect(persisted.executionState.daasRouteStatus).toBe("daas_route_failed");
+    expect(persisted.executionState.daasMissionRouted).toBeUndefined();
+  });
+
   it("uses explicit task/comment prompt text instead of wake metadata for DAAS handoff", async () => {
     process.env["DAAS_BASE_URL"] = "https://daas.example.test";
     process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ missionId: "mis_prompt", status: "handoff_accepted" }), {
+      new Response(JSON.stringify({
+        missionId: "mis_prompt",
+        status: "handoff_accepted",
+        evidence_url: "https://daas.example.test/missions/mis_prompt/evidence",
+      }), {
         status: 202,
         headers: { "content-type": "application/json" },
       }),
@@ -639,7 +1077,14 @@ describe("routeInfrastructureTicketThroughDaasAdapter", () => {
     process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
     process.env["PAPERCLIP_WEBHOOK_SECRET"] = "webhook-secret";
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, data: { daas_mission_id: "mis_daas_9", status: "waiting_for_lock" } }), {
+      new Response(JSON.stringify({
+        ok: true,
+        data: {
+          daas_mission_id: "mis_daas_9",
+          status: "waiting_for_lock",
+          evidence_url: "https://daas.example.test/missions/mis_daas_9/evidence",
+        },
+      }), {
         status: 201,
         headers: { "content-type": "application/json" },
       }),
@@ -834,6 +1279,7 @@ describe("routeInfrastructureTicketThroughDaasAdapter", () => {
             status: "requested",
             outcome: "routed_accepted",
             ok: true,
+            evidenceUrl: "https://daas.example.test/missions/mis_existing/evidence",
             executionAuthority: "daas",
             httpStatus: 201,
             signals: ["infra.orchestration"],
@@ -872,7 +1318,11 @@ describe("routeInfrastructureTicketThroughDaasAdapter", () => {
     process.env["DAAS_API_SHARED_SECRET"] = "outbound-daas-secret";
     process.env["PAPERCLIP_WEBHOOK_SECRET"] = "webhook-secret";
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ missionId: "mis_new", status: "handoff_accepted" }), {
+      new Response(JSON.stringify({
+        missionId: "mis_new",
+        status: "handoff_accepted",
+        evidence_url: "https://daas.example.test/missions/mis_new/evidence",
+      }), {
         status: 202,
         headers: { "content-type": "application/json" },
       }),
@@ -889,6 +1339,7 @@ describe("routeInfrastructureTicketThroughDaasAdapter", () => {
             status: "requested",
             outcome: "routed_accepted",
             ok: true,
+            evidenceUrl: "https://daas.example.test/missions/mis_existing/evidence",
             executionAuthority: "daas",
             httpStatus: 201,
             signals: ["infra.orchestration"],
