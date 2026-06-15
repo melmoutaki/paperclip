@@ -4042,7 +4042,7 @@ export function IssueDetail() {
         userProfileMap={userProfileMap}
       />
 
-      <IssueOutputSection workProducts={workProducts} />
+      <IssueOutputSection workProducts={workProducts} executionState={issue.executionState} />
 
       {attachmentsInitialLoading ? (
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />

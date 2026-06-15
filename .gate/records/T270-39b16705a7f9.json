@@ -1,0 +1,19 @@
+{
+  "gate_version": "2",
+  "task": "T270",
+  "title": "Modify Paperclip fork work-product UI to display DAAS mission status and DAAS evidence link as authoritative",
+  "author_engine": "codex",
+  "author_pool": "OAI-C55-DEVOPS",
+  "reviewer_engine": "claude",
+  "reviewer_cli_version": "2.1.169 (Claude Code)",
+  "base_ref": "origin/daas/patches",
+  "base_sha": "d09e29b76724935ab43c1b7521cb743e336c8ce5",
+  "reviewed_sha": "39b16705a7f95cf582f2594072bec8744432c076",
+  "diff_sha256": "367911575560236e50e7eda096fe7b0725b5ee50dd008039898a636c70e53a75",
+  "verdict": "GO",
+  "iteration": 1,
+  "nonce": "0a5670a646188e3075a4c97a",
+  "review_log": ".gate/records/T270-39b16705a7f9.review.txt",
+  "sign_fields": "task|author_engine|reviewer_engine|base_sha|reviewed_sha|diff_sha256|verdict|nonce",
+  "hmac_sha256": ""
+}

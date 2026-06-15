@@ -1,11 +1,14 @@
 import { Play } from "lucide-react";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { getDaasMissionOutput } from "@/lib/daas-mission-output";
 import { getIssueOutputs, type IssueOutputItem } from "@/lib/issue-output";
+import { DaasMissionStatusCard } from "./DaasMissionStatusCard";
 import { OutputPrimaryCard } from "./OutputPrimaryCard";
 import { OutputRow } from "./OutputRow";
 
 interface IssueOutputSectionProps {
   workProducts: IssueWorkProduct[] | null | undefined;
+  executionState?: unknown;
   /** Optional resolver for the artifact creator's display name. */
   resolveCreatorName?: (item: IssueOutputItem) => string | null;
 }
@@ -19,26 +22,32 @@ interface IssueOutputSectionProps {
  * omitted entirely when the issue has produced no outputs — we never show a
  * permanent empty card.
  */
-export function IssueOutputSection({ workProducts, resolveCreatorName }: IssueOutputSectionProps) {
+export function IssueOutputSection({ workProducts, executionState, resolveCreatorName }: IssueOutputSectionProps) {
   const { primary, rest, count } = getIssueOutputs(workProducts);
+  const daasOutput = getDaasMissionOutput(executionState);
 
-  if (!primary) return null;
+  if (!primary && !daasOutput) return null;
 
   const creatorFor = (item: IssueOutputItem) => resolveCreatorName?.(item) ?? null;
+  const totalCount = count + (daasOutput ? 1 : 0);
 
   return (
     <section className="space-y-3" aria-label="Task outputs">
       <div className="flex items-center gap-2">
         <Play className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
         <h3 className="text-sm font-medium text-muted-foreground">Output</h3>
-        <span className="text-xs text-muted-foreground">{count}</span>
+        <span className="text-xs text-muted-foreground">{totalCount}</span>
       </div>
+
+      {daasOutput ? <DaasMissionStatusCard output={daasOutput} /> : null}
 
       {/* Stable anchor target so company Artifacts cards can deep-link to a
           specific work product inside its issue context (PAP-10359). */}
-      <div id={`work-product-${primary.id}`} className="scroll-mt-20">
-        <OutputPrimaryCard item={primary} creatorName={creatorFor(primary)} />
-      </div>
+      {primary ? (
+        <div id={`work-product-${primary.id}`} className="scroll-mt-20">
+          <OutputPrimaryCard item={primary} creatorName={creatorFor(primary)} />
+        </div>
+      ) : null}
 
       {rest.length > 0 && (
         <div className="space-y-2">
