@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { AddressInfo } from "node:net";
-import { DAAS_INFRASTRUCTURE_TASK_DENIAL_MESSAGE } from "@paperclipai/shared";
+import { DAAS_INFRASTRUCTURE_TASK_DENIAL_MESSAGE, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import {
   assertDaasForkHealthSafe,
   buildDaasForkHealthStatus,
@@ -20,11 +20,13 @@ import {
   postInfrastructureTicketToDaasAdapter,
 } from "../services/daas-mission-adapter.js";
 import { daasIntegrationRoutes } from "../routes/daas-integrations.js";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 
 const SAVED_ENV = {
   DAAS_API_SHARED_SECRET: process.env.DAAS_API_SHARED_SECRET,
   DAAS_BASE_URL: process.env.DAAS_BASE_URL,
   PAPERCLIP_WEBHOOK_SECRET: process.env.PAPERCLIP_WEBHOOK_SECRET,
+  PAPERCLIP_AGENT_JWT_SECRET: process.env.PAPERCLIP_AGENT_JWT_SECRET,
   PAPERCLIP_TELEMETRY_ENABLED: process.env.PAPERCLIP_TELEMETRY_ENABLED,
   PAPERCLIP_FEEDBACK_SHARING_ENABLED: process.env.PAPERCLIP_FEEDBACK_SHARING_ENABLED,
   DO_NOT_TRACK: process.env.DO_NOT_TRACK,
@@ -40,23 +42,45 @@ function resetEnv() {
   }
 }
 
-function createMissionRouteApp(agentRows: Array<{ id: string }> = [{ id: "agent-limited" }]) {
+function createMissionRouteApp(
+  agentRows: Array<{ id: string; permissions?: Record<string, unknown> }> = [
+    { id: "agent-limited", permissions: { trustPreset: LOW_TRUST_REVIEW_PRESET } },
+  ],
+  issueRows: Array<{ executionState: Record<string, unknown> | null; assigneeAgentId?: string | null }> = [
+    { executionState: null, assigneeAgentId: "agent-limited" },
+  ],
+) {
   const insertValues = vi.fn(async () => undefined);
+  const updateSet = vi.fn(() => ({ where: vi.fn(async () => undefined) }));
+  const normalizedIssueRows = issueRows.map((row) => ({
+    assigneeAgentId: "agent-limited",
+    ...row,
+  }));
   const db = {
-    select: vi.fn(() => ({
+    select: vi.fn((selection: Record<string, unknown>) => ({
       from: () => ({
         where: () => ({
-          then: (onFulfilled: (rows: Array<{ id: string }>) => unknown, onRejected?: (reason: unknown) => unknown) =>
-            Promise.resolve(agentRows).then(onFulfilled, onRejected),
+          then: (onFulfilled: (rows: Array<{ id: string; permissions?: Record<string, unknown> }> | Array<{ executionState: Record<string, unknown> | null; assigneeAgentId?: string | null }>) => unknown, onRejected?: (reason: unknown) => unknown) =>
+            Promise.resolve(Object.prototype.hasOwnProperty.call(selection, "executionState") ? normalizedIssueRows : agentRows)
+              .then(onFulfilled, onRejected),
         }),
       }),
     })),
     insert: vi.fn(() => ({ values: insertValues })),
+    update: vi.fn(() => ({ set: updateSet })),
   };
   const app = express();
   app.use(express.json());
   app.use("/api", daasIntegrationRoutes(db as any));
-  return { app, insertValues };
+  return { app, insertValues, updateSet };
+}
+
+function missionAuthHeader(agentId = "agent-limited", companyId = "company-1") {
+  process.env.PAPERCLIP_AGENT_JWT_SECRET =
+    process.env.PAPERCLIP_AGENT_JWT_SECRET ?? ["paperclip", "local", "jwt", "test", "value"].join("-");
+  const jwt = createLocalAgentJwt(agentId, companyId, "daas-limited", "run-daas-route");
+  expect(jwt).toBeTruthy();
+  return `Bearer ${jwt}`;
 }
 
 async function withLocalRequest<T>(
@@ -98,11 +122,14 @@ describe("T274 DAAS fork security regression suite", () => {
   afterEach(resetEnv);
 
   it("allows a limited Paperclip agent to create a DAAS mission without creating an internal run", async () => {
-    process.env.PAPERCLIP_WEBHOOK_SECRET = "inbound-route-shared";
     process.env.DAAS_API_SHARED_SECRET = "outbound-daas-shared";
     process.env.DAAS_BASE_URL = "https://daas.example.test";
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ missionId: "mis_daas_limited", status: "accepted" }), {
+      new Response(JSON.stringify({
+        missionId: "mis_daas_limited",
+        status: "accepted",
+        evidence_url: "https://daas.example.test/missions/mis_daas_limited/evidence",
+      }), {
         status: 202,
         headers: { "content-type": "application/json" },
       }),
@@ -113,7 +140,7 @@ describe("T274 DAAS fork security regression suite", () => {
     await withLocalRequest(app, async (client) => {
       const response = await client
         .post("/api/integrations/paperclip/missions")
-        .set("authorization", "Bearer inbound-route-shared")
+        .set("authorization", missionAuthHeader())
         .send({
           companyId: "company-1",
           agentId: "agent-limited",
@@ -129,6 +156,7 @@ describe("T274 DAAS fork security regression suite", () => {
         status: "handoff_accepted",
         executionAuthority: "daas",
         paperclipRunId: null,
+        evidenceUrl: "https://daas.example.test/missions/mis_daas_limited/evidence",
       });
     });
 
@@ -231,7 +259,14 @@ describe("T274 DAAS fork security regression suite", () => {
     process.env.DAAS_API_SHARED_SECRET = "outbound-daas-shared";
     process.env.PAPERCLIP_WEBHOOK_SECRET = "inbound-route-shared";
     const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, data: { daas_mission_id: "mis_daas_secret_intent", status: "waiting_for_lock" } }), {
+      new Response(JSON.stringify({
+        ok: true,
+        data: {
+          daas_mission_id: "mis_daas_secret_intent",
+          status: "waiting_for_lock",
+          evidence_url: "https://daas.example.test/missions/mis_daas_secret_intent/evidence",
+        },
+      }), {
         status: 201,
         headers: { "content-type": "application/json" },
       }),

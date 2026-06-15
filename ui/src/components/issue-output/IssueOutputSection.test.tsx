@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { IssueOutputSection } from "./IssueOutputSection";
 
@@ -48,6 +48,14 @@ function metadata(key: string, contentType: string, filename: string) {
 }
 
 describe("IssueOutputSection", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITE_DAAS_BASE_URL", "https://daas.example");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("renders DAAS mission status and evidence link as the authoritative output", () => {
     const markup = renderToStaticMarkup(
       <IssueOutputSection

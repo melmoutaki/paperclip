@@ -1,0 +1,205 @@
+{
+  "$comment": "T275 Phase 0B acceptance walkthrough. REDACTED. No real secrets, hosts, or credentials. ACCEPTANCE RESULT: PASS for the Paperclip-fork contract; step 3 evidence-link sub-step is backed by limited-agent route exposure, durable issue persistence, a non-secret DAAS-origin URL-safety contract, a persisted evidenceUrl field, and fail-closed handling when accepted DAAS responses lack safe evidence. Focused server/UI tests passed.",
+  "fork": "daas",
+  "task": "T275",
+  "overall_result": "PASS",
+  "overall_result_scope": "paperclip_fork_contract",
+  "scenario": "limited-permission Paperclip agent creates a DAAS mission, is denied direct SSH/raw-shell/secret access, and receives a DAAS evidence link (now persisted via evidenceUrl) as authoritative status",
+  "actor": {
+    "agentId": "agent-limited",
+    "companyId": "company-1",
+    "trustPreset": "limited",
+    "note": "A limited-permission Paperclip agent. It can request governed missions but holds no direct-infrastructure capability."
+  },
+  "steps": [
+    {
+      "id": "1-create-mission",
+      "requirement": "limited agent creates a DAAS mission via the adapter",
+      "request": {
+        "method": "POST",
+        "path": "/api/integrations/paperclip/missions",
+        "headers": {
+          "authorization": "Bearer <REDACTED_SCOPED_LOCAL_AGENT_JWT>",
+          "content-type": "application/json"
+        },
+        "body": {
+          "companyId": "company-1",
+          "agentId": "agent-limited",
+          "issueId": "issue-1",
+          "title": "Restart nginx in production",
+          "prompt": "Restart nginx in production"
+        }
+      },
+      "server_behavior": {
+        "inbound_auth": "verifyLocalAgentJwt() requires a scoped local agent JWT with matching company_id and sub/agent id; missing or mismatched JWTs fail closed with agent_jwt_required or agent_scope_mismatch.",
+        "agent_lookup": "agent must exist for (agentId, companyId), and persisted agents.permissions.trustPreset must be low_trust_review; request-body permissions are ignored and cannot grant limited-agent authority.",
+        "intent_detection": {
+          "isInfrastructureIntent": true,
+          "signals": [
+            "infra.orchestration"
+          ]
+        },
+        "outbound_handoff": {
+          "to": "POST <DAAS_BASE_URL>/api/missions",
+          "auth_header": "x-paperclip-webhook-secret: <REDACTED_OUTBOUND_DAAS_SECRET>",
+          "note": "Inbound mission route authentication uses a scoped local agent JWT bound to company_id/sub. Outbound uses the DAAS shared secret, which remains server-side and is never exposed to the limited agent."
+        },
+        "daas_returned": {
+          "missionId": "mis_daas_limited",
+          "status": "accepted",
+          "evidence_url": "https://daas.example.test/missions/mis_daas_limited/evidence"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "missionId": "mis_daas_limited",
+          "status": "handoff_accepted",
+          "executionAuthority": "daas",
+          "paperclipRunId": null,
+          "evidenceUrl": "https://daas.example.test/missions/mis_daas_limited/evidence"
+        }
+      },
+      "assertion": "paperclipRunId === null proves no internal Paperclip run was created; mission lives in DAAS.",
+      "source": "server/src/routes/daas-integrations.ts:134-220",
+      "covered_by_test": "daas-fork-security-regression.test.ts > 'allows a limited Paperclip agent to create a DAAS mission without creating an internal run'"
+    },
+    {
+      "id": "2-deny-direct-access",
+      "requirement": "same agent is denied direct SSH, raw shell, and secret access",
+      "cases": [
+        {
+          "prompt_class": "direct SSH",
+          "decision": "deny_requires_mission_route",
+          "signals": [
+            "ssh.open"
+          ],
+          "message_key": "DAAS_INFRASTRUCTURE_TASK_DENIAL_MESSAGE",
+          "prompt_text_in_decision_object": false
+        },
+        {
+          "prompt_class": "raw shell",
+          "decision": "deny_requires_mission_route",
+          "signals": [
+            "shell.execute"
+          ],
+          "message_key": "DAAS_INFRASTRUCTURE_TASK_DENIAL_MESSAGE",
+          "prompt_text_in_decision_object": false
+        },
+        {
+          "prompt_class": "secret access",
+          "decision": "deny_requires_mission_route",
+          "signals": [
+            "secret.read"
+          ],
+          "message_key": "DAAS_INFRASTRUCTURE_TASK_DENIAL_MESSAGE",
+          "prompt_text_in_decision_object": false
+        }
+      ],
+      "connector_state": {
+        "dangerous_ssh_connectors_enabled": false,
+        "connector_ids": [
+          "direct-ssh-transport",
+          "ssh-environment-driver",
+          "ssh-execution-target",
+          "exe-dev-sandbox-provider",
+          "process-adapter-ssh-command"
+        ],
+        "override_attempt_result": "assertDaasForkHealthSafe() throws",
+        "blocked_adapter_types": [
+          "process",
+          "http"
+        ],
+        "flagged_config_paths": [
+          "adapterConfig.executionTarget",
+          "adapterConfig.nested.dangerouslyBypassSandbox"
+        ]
+      },
+      "source": "server/src/services/daas-infrastructure-task-guard.ts:250-277, server/src/daas-fork-health.ts:128-140, server/src/services/daas-infrastructure-guard.ts",
+      "covered_by_test": "daas-fork-security-regression.test.ts > 'denies direct SSH, raw shell, and secret-intent tasks outside the DAAS mission route' / 'blocks raw process/http infrastructure adapters...' / 'asserts telemetry and dangerous connectors are disabled...'"
+    },
+    {
+      "id": "3-daas-authoritative-status",
+      "requirement": "DAAS, not Paperclip, is the authoritative final mission status source AND the limited agent receives a DAAS evidence link",
+      "result": "PASS",
+      "status_authority_sub_step": {
+        "result": "PROVEN_REGRESSION_ONLY",
+        "persisted_execution_state": {
+          "daasMission": {
+            "status": "<verbatim DAAS status>",
+            "executionAuthority": "daas",
+            "missionId": "mis_daas_limited",
+            "evidenceUrl": "<verbatim safe DAAS evidence URL, http(s) only; required for accepted handoff>"
+          },
+          "daasInternalExecution": "disabled",
+          "daasMissionRouted_provenance": "set ONLY when missionWasAcknowledged (real missionId AND routed_accepted AND ok AND safe evidenceUrl)"
+        },
+        "surfaced_status_effect": "a surfaced DAAS status (blocked_by_policy / rejected / failed) sets issue.status = 'blocked' and ok = false",
+        "source": "server/src/services/daas-mission-adapter.ts (buildDaasMissionExecutionState, persistDaasMissionOnIssue), ui/src/lib/daas-mission-output.ts:95-116"
+      },
+      "evidence_link_sub_step": {
+        "result": "PASS",
+        "requirement": "limited agent receives a DAAS evidence link",
+        "safe_url_example": "An accepted mission persists e.g. 'https://daas.example.test/missions/mis_daas_limited/evidence' (illustrative host). If DAAS returns no safe evidence URL, Paperclip fails closed with daas_mission_evidence_required and does not create accepted route provenance.",
+        "covered_by_test": "daas-integrations.test.ts > 'exposes a safe DAAS evidence link on the limited-agent mission route' / 'uses a stable mission id and DAAS idempotency key for duplicate limited-route requests' / 'preserves existing issue execution state when persisting limited-route DAAS provenance' / 'fails closed before DAAS handoff when a supplied issue id is not company-scoped' / 'rejects issue ids assigned to a different agent before DAAS handoff' / 'requires issueId before DAAS handoff so accepted missions are durably persisted' / 'rejects spoofed limited permissions when the persisted agent is not limited' / 'rejects missing route agent JWTs' / 'rejects route agent JWTs scoped to a different company or agent' / limited-route issue persistence assertions / 'surfaces DAAS policy statuses on failed wrapper responses' blocked-state assertions / 'accepts shared DAAS in-progress statuses on the limited-agent mission route when safe evidence is present' / 'omits an unsafe DAAS evidence link with a query param from the route response' / 'fails closed when DAAS returns a cross-origin evidence link' / 'fails closed when DAAS returns an evidence link with an extra path token segment' / 'fails closed when the DAAS response envelope is not ok despite accepted-looking status' / handoffMissionToDaas 'returns a safe DAAS-provided evidence url on the accepted path' / 'omits an unsafe DAAS evidence url (userinfo), failing closed'; daas-fork-health.test.ts > 'documents the frontend-safe DAAS origin in the sidecar Docker build and runtime env'; daas-mission-adapter.test.ts > 'captures a DAAS-provided http(s) evidence url from an accepted response' / 'fails closed when a non-2xx DAAS response carries an accepted-looking body with evidence' / 'rejects accepted persisted states with a non-2xx HTTP status' / 'rejects an accepted DAAS response with an unsafe evidence url, failing closed' / 'does not mint DAAS route provenance from an unsafe evidence url even when ok is true' / readDaasMissionState negative-state read-back tests / 'captures a surfaced mission's evidence url from the links/evidence shape' / 'persists a DAAS evidence url into executionState.daasMission for the UI to render' / 'omits an unsafe DAAS evidence url from the persisted mission state' / parseDaasEvidenceUrl unit block incl. cross-origin, wrong-mission, path-token, userinfo, query, and fragment rejection; ui IssueOutputSection.test.tsx > DAAS evidence link render with configured frontend base / unsafe evidence URL omission; ui DaasMissionStatusCard.test.tsx > evidence-link render / no-render / configured non-example DAAS origin render / missing frontend DAAS base fails closed / 'drops a tampered unsafe evidence url (userinfo, query, or fragment)'",
+        "executed": "Focused server and UI suites were executed in the T275 worktree and passed; see m10-exit-gate.json executed_checks.",
+        "source": "server/src/routes/daas-integrations.ts (handoffMissionToDaas + route), server/src/services/daas-mission-adapter.ts, ui/src/lib/daas-mission-output.ts, ui/src/components/issue-output/DaasMissionStatusCard.tsx:56-63",
+        "how_proven": "handoffMissionToDaas parses a safe evidence link and POST /api/integrations/paperclip/missions returns it as evidenceUrl on accepted responses, then persists the DAAS mission state to the issue when issueId is supplied and company-scoped. If DAAS accepts without a safe evidence link, the route returns daas_mission_evidence_required instead of handoff_accepted. PersistedDaasMissionState carries evidenceUrl: string | null, but buildDaasMissionExecutionState creates DAAS-route provenance only when missionId + routed_accepted + ok + safe evidenceUrl are all present. parseDaasEvidenceUrl reads evidence_url/evidenceUrl, evidence.{link,url,href}, links.{evidence,evidence_url,evidenceUrl} at envelope and data levels; readSafeEvidenceUrl accepts only an absolute http(s) URL from the configured DAAS origin with a bounded /missions/<mission-id>/evidence|proof|e path and no userinfo/query/fragment, and fails closed otherwise. The UI normalizeEvidenceUrl enforces the same configured-origin and mission-id-bound path contract before rendering; docker-compose.daas-sidecar.yml passes VITE_DAAS_BASE_URL to the Docker build and runtime env.",
+        "test_result": "PASS: server focused suite 88/88, UI focused suite 16/16, server typecheck passed."
+      }
+    },
+    {
+      "id": "4-no-proof-no-success",
+      "requirement": "agent success text cannot override missing/failing proof",
+      "invariant": "DaasMissionAdapterDispatchResult.ok is true ONLY when DAAS returns an accepted/running status AND a non-empty mission id AND response.ok AND wrapperOk !== false. faked is the literal constant false on every return path.",
+      "negative_paths": [
+        {
+          "condition": "DAAS returns success-shaped text but no mission id",
+          "result": {
+            "ok": false,
+            "outcome": "handoff_failed",
+            "faked": false
+          }
+        },
+        {
+          "condition": "DAAS returns blocked_by_policy / rejected / awaiting_approval",
+          "result": {
+            "ok": false,
+            "outcome": "routed_surfaced",
+            "faked": false
+          }
+        },
+        {
+          "condition": "response envelope ok === false",
+          "result": {
+            "ok": false,
+            "outcome": "handoff_failed",
+            "faked": false
+          }
+        },
+        {
+          "condition": "adapter unreachable / token absent / timeout",
+          "result": {
+            "ok": false,
+            "outcome": "adapter_unavailable",
+            "faked": false
+          }
+        }
+      ],
+      "source": "server/src/services/daas-mission-adapter.ts:228-338",
+      "covered_by_test": "daas-mission-adapter.test.ts > 'does not treat success as accepted without DAAS evidence proof' / 'surfaces blocked_by_policy / rejected / awaiting_approval without faking success' / 'fails closed when DAAS accepts without returning a mission id' / 'fails closed when the DAAS response envelope explicitly says ok false'; daas-integrations.test.ts > 'fails closed when the DAAS response envelope is not ok despite accepted-looking status'"
+    },
+    {
+      "id": "5-no-unredacted-secrets",
+      "requirement": "evidence contains no unredacted secrets",
+      "guarantees": [
+        "Inbound route auth uses a scoped local agent JWT; the limited agent never receives the outbound DAAS shared secret.",
+        "Denial decision objects exclude the raw prompt text (only canonical signal names are retained).",
+        "Denial logs emit canonical signal names only, never the matched substring.",
+        "This evidence fixture itself uses <REDACTED_*> placeholders and synthetic hosts/ids."
+      ],
+      "source": "server/src/services/daas-mission-adapter.ts:252-263, server/src/services/daas-infrastructure-task-guard.ts:322-345",
+      "covered_by_test": "daas-fork-security-regression.test.ts > 'keeps provider context free of raw secrets while routing secret-intent work to DAAS'"
+    }
+  ]
+}

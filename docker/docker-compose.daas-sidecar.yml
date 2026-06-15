@@ -19,6 +19,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        VITE_DAAS_BASE_URL: "${VITE_DAAS_BASE_URL:-http://host.docker.internal:8000}"
     depends_on:
       paperclip-db:
         condition: service_healthy
@@ -38,6 +40,7 @@ services:
       DO_NOT_TRACK: "1"
       PAPERCLIP_FEEDBACK_SHARING_ENABLED: "0"
       DAAS_BASE_URL: "${DAAS_BASE_URL:-http://host.docker.internal:8000}"
+      VITE_DAAS_BASE_URL: "${VITE_DAAS_BASE_URL:-http://host.docker.internal:8000}"
       PAPERCLIP_WEBHOOK_SECRET: "${PAPERCLIP_WEBHOOK_SECRET:?set PAPERCLIP_WEBHOOK_SECRET}"
       DAAS_API_SHARED_SECRET: "${DAAS_API_SHARED_SECRET:?set DAAS_API_SHARED_SECRET}"
       BETTER_AUTH_SECRET: "${PAPERCLIP_BETTER_AUTH_SECRET:?set PAPERCLIP_BETTER_AUTH_SECRET}"

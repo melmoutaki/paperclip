@@ -1,17 +1,37 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents } from "@paperclipai/db";
-import { DAAS_PAPERCLIP_MISSIONS_ROUTE } from "@paperclipai/shared";
+import { activityLog, agents, issues } from "@paperclipai/db";
+import { DAAS_PAPERCLIP_MISSIONS_ROUTE, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { detectDaasInfrastructureTaskIntent } from "../services/daas-infrastructure-task-guard.js";
 import {
+  buildDaasMissionRequestFingerprint,
+  buildDaasMissionExecutionState,
   classifyDaasMissionStatus,
+  DAAS_MISSION_DESTINATION_ROUTE,
+  DAAS_MISSION_EVIDENCE_REQUIRED_STATUS,
   isAllowedDaasMissionOrigin,
+  parseDaasEvidenceUrl,
 } from "../services/daas-mission-adapter.js";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function hasLimitedMissionRoutePermission(agent: { permissions: unknown }): boolean {
+  return readRecord(agent.permissions)?.trustPreset === LOW_TRUST_REVIEW_PRESET;
+}
+
+function readBearerToken(value: string | undefined): string | null {
+  const token = value?.replace(/^Bearer\s+/i, "").trim();
+  return token && token.length > 0 ? token : null;
 }
 
 export function readDaasMissionPrompt(body: Record<string, unknown>): string | null {
@@ -25,16 +45,6 @@ export function readDaasMissionPrompt(body: Record<string, unknown>): string | n
 
 export function detectDaasMissionRequestIntent(body: Record<string, unknown>) {
   return detectDaasInfrastructureTaskIntent(readDaasMissionPrompt(body), readNonEmptyString(body.title));
-}
-
-export function hasValidDaasMissionSecret(provided: string | undefined): boolean {
-  const expected = process.env.PAPERCLIP_WEBHOOK_SECRET?.trim();
-  const providedValue = provided?.replace(/^Bearer\s+/i, "").trim();
-  if (!expected || !providedValue) return false;
-  const expectedBuffer = Buffer.from(expected);
-  const providedBuffer = Buffer.from(providedValue);
-  if (expectedBuffer.length !== providedBuffer.length) return false;
-  return timingSafeEqual(expectedBuffer, providedBuffer);
 }
 
 export function resolveDaasMissionHandoffUrl(): URL | null {
@@ -54,6 +64,7 @@ export async function handoffMissionToDaas(input: {
   companyId: string;
   agentId: string;
   missionId: string;
+  requestFingerprint: string;
   prompt: string;
   issueId: string | null;
   title: string | null;
@@ -65,9 +76,11 @@ export async function handoffMissionToDaas(input: {
       ok: false as const,
       status: 0,
       daasMissionId: input.missionId,
+      evidenceUrl: null,
     };
   }
   headers["x-paperclip-webhook-secret"] = authValue;
+  headers["idempotency-key"] = `paperclip:${input.companyId}:${input.issueId}:${input.requestFingerprint}`;
   let response: Response;
   try {
     response = await fetch(input.url, {
@@ -81,6 +94,7 @@ export async function handoffMissionToDaas(input: {
         issueId: input.issueId,
         title: input.title,
         prompt: input.prompt,
+        requestFingerprint: input.requestFingerprint,
       }),
     });
   } catch {
@@ -88,12 +102,14 @@ export async function handoffMissionToDaas(input: {
       ok: false as const,
       status: 0,
       daasMissionId: input.missionId,
+      evidenceUrl: null,
     };
   }
-  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
-  const data = payload && typeof payload.data === "object" && !Array.isArray(payload.data)
-    ? payload.data as Record<string, unknown>
-    : null;
+	  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+	  const data = payload && typeof payload.data === "object" && !Array.isArray(payload.data)
+	    ? payload.data as Record<string, unknown>
+	    : null;
+  const wrapperOk = typeof payload?.ok === "boolean" ? payload.ok : null;
   const returnedDaasMissionId =
     readNonEmptyString(data?.daas_mission_id) ??
     readNonEmptyString(payload?.missionId) ??
@@ -101,6 +117,10 @@ export async function handoffMissionToDaas(input: {
   const daasStatus =
     readNonEmptyString(data?.status) ??
     readNonEmptyString(payload?.status);
+  // Parse a DAAS-provided evidence link from the response, fail-closed: only a
+  // safe http(s) URL with no credentials/query/fragment survives (see
+  // readSafeEvidenceUrl). This is the limited agent's authoritative proof link.
+  const evidenceUrl = parseDaasEvidenceUrl(payload, data, input.url.origin, returnedDaasMissionId);
   const classification = classifyDaasMissionStatus(daasStatus);
   if (!response.ok) {
     return {
@@ -108,15 +128,24 @@ export async function handoffMissionToDaas(input: {
       status: response.status,
       daasMissionId: returnedDaasMissionId ?? input.missionId,
       daasStatus: classification === "routed_surfaced" ? daasStatus : undefined,
+      evidenceUrl,
     };
   }
   const acceptedStatus = daasStatus;
-  if (!returnedDaasMissionId || !["accepted", "queued", "created"].includes(acceptedStatus ?? "")) {
+  const acceptedClassification = classification === "routed_accepted";
+  const evidenceRequiredFailure =
+    returnedDaasMissionId && acceptedClassification && !evidenceUrl;
+  if (wrapperOk === false || !returnedDaasMissionId || evidenceRequiredFailure || !acceptedClassification) {
     return {
       ok: false as const,
       status: response.status,
       daasMissionId: returnedDaasMissionId ?? input.missionId,
-      daasStatus: classification === "routed_surfaced" ? daasStatus : undefined,
+      daasStatus: wrapperOk === false
+        ? "daas_mission_handoff_failed"
+        : evidenceRequiredFailure
+        ? DAAS_MISSION_EVIDENCE_REQUIRED_STATUS
+        : classification === "routed_surfaced" ? daasStatus : undefined,
+      evidenceUrl,
     };
   }
   return {
@@ -124,6 +153,7 @@ export async function handoffMissionToDaas(input: {
       status: response.status,
       daasMissionId: returnedDaasMissionId,
       daasStatus: acceptedStatus,
+      evidenceUrl,
   };
 }
 
@@ -132,28 +162,35 @@ export function daasIntegrationRoutes(db: Db) {
   const routePath = DAAS_PAPERCLIP_MISSIONS_ROUTE.replace(/^\/api/, "");
 
   router.post(routePath, async (req, res) => {
-    if (!hasValidDaasMissionSecret(req.get("authorization") ?? req.get("x-paperclip-webhook-secret"))) {
-      res.status(401).json({ error: "daas_mission_secret_required" });
-      return;
-    }
-
     const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
     const companyId = readNonEmptyString(body.companyId);
     const agentId = readNonEmptyString(body.agentId);
-    const missionId = readNonEmptyString(body.missionId) ?? randomUUID();
     const prompt = readDaasMissionPrompt(body);
     if (!companyId || !agentId || !prompt) {
       res.status(400).json({ error: "companyId_agentId_prompt_required" });
       return;
     }
+    const agentClaims = verifyLocalAgentJwt(readBearerToken(req.get("authorization")) ?? "");
+    if (!agentClaims) {
+      res.status(401).json({ error: "agent_jwt_required" });
+      return;
+    }
+    if (agentClaims.company_id !== companyId || agentClaims.sub !== agentId) {
+      res.status(403).json({ error: "agent_scope_mismatch" });
+      return;
+    }
 
     const agent = await db
-      .select({ id: agents.id })
+      .select({ id: agents.id, permissions: agents.permissions })
       .from(agents)
       .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
     if (!agent) {
       res.status(404).json({ error: "agent_not_found" });
+      return;
+    }
+    if (!hasLimitedMissionRoutePermission(agent)) {
+      res.status(403).json({ error: "limited_agent_required" });
       return;
     }
 
@@ -162,6 +199,21 @@ export function daasIntegrationRoutes(db: Db) {
       res.status(400).json({ error: "infrastructure_mission_required" });
       return;
     }
+
+    const issueId = readNonEmptyString(body.issueId);
+    if (!issueId) {
+      res.status(400).json({ error: "issueId_required" });
+      return;
+    }
+    const requestFingerprint = buildDaasMissionRequestFingerprint({
+      companyId,
+      agentId,
+      issueId,
+      prompt,
+      target: null,
+      signals: intent.signals,
+    });
+    const missionId = readNonEmptyString(body.missionId) ?? `paperclip-${requestFingerprint.slice(0, 32)}`;
 
     const handoffUrl = resolveDaasMissionHandoffUrl();
     if (!handoffUrl) {
@@ -174,15 +226,61 @@ export function daasIntegrationRoutes(db: Db) {
       return;
     }
 
-    const handoff = await handoffMissionToDaas({
+    const existingIssue = await db
+        .select({ executionState: issues.executionState, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+    if (!existingIssue) {
+      res.status(404).json({ error: "issue_not_found" });
+      return;
+    }
+    if (existingIssue.assigneeAgentId !== agentId) {
+      res.status(403).json({ error: "issue_agent_mismatch" });
+      return;
+    }
+	    const handoff = await handoffMissionToDaas({
       url: handoffUrl,
       companyId,
       agentId,
       missionId,
+      requestFingerprint,
       prompt,
-      issueId: readNonEmptyString(body.issueId),
-      title: readNonEmptyString(body.title),
-    });
+	      issueId,
+	      title: readNonEmptyString(body.title),
+	    });
+    if (issueId) {
+      const previousExecutionState = existingIssue?.executionState &&
+        typeof existingIssue.executionState === "object"
+        ? existingIssue.executionState
+        : null;
+      const routeOutcome = handoff.ok
+        ? "routed_accepted"
+        : classifyDaasMissionStatus(handoff.daasStatus ?? null) === "routed_surfaced"
+          ? "routed_surfaced"
+          : "handoff_failed";
+      await db
+        .update(issues)
+        .set({
+          ...(!handoff.ok ? { status: "blocked" } : {}),
+          executionState: buildDaasMissionExecutionState(previousExecutionState, {
+            route: DAAS_MISSION_DESTINATION_ROUTE,
+            missionId: handoff.daasMissionId,
+            requestFingerprint,
+            target: null,
+            status: handoff.ok ? handoff.daasStatus ?? "accepted" : handoff.daasStatus ?? "daas_mission_handoff_failed",
+            outcome: routeOutcome,
+            ok: handoff.ok,
+            executionAuthority: "daas",
+            evidenceUrl: handoff.evidenceUrl,
+            httpStatus: handoff.status,
+            signals: intent.signals,
+            routedAt: new Date().toISOString(),
+          }),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+    }
     await db.insert(activityLog).values({
       companyId,
       actorType: "system",
@@ -207,6 +305,7 @@ export function daasIntegrationRoutes(db: Db) {
 	        status: handoff.daasStatus ?? "daas_mission_handoff_failed",
 	        executionAuthority: "daas",
 	        paperclipRunId: null,
+	        ...(handoff.evidenceUrl ? { evidenceUrl: handoff.evidenceUrl } : {}),
 	      });
       return;
     }
@@ -216,6 +315,7 @@ export function daasIntegrationRoutes(db: Db) {
       status: "handoff_accepted",
       executionAuthority: "daas",
       paperclipRunId: null,
+      ...(handoff.evidenceUrl ? { evidenceUrl: handoff.evidenceUrl } : {}),
     });
   });
 
