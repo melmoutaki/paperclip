@@ -48,6 +48,114 @@ function metadata(key: string, contentType: string, filename: string) {
 }
 
 describe("IssueOutputSection", () => {
+  it("renders DAAS mission status and evidence link as the authoritative output", () => {
+    const markup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[]}
+        executionState={{
+          daasMission: {
+            executionAuthority: "daas",
+            missionId: "mis_daas_270",
+            status: "success",
+            evidenceUrl: "https://daas.example/missions/mis_daas_270/evidence",
+          },
+          daasRouteStatus: "routed_to_daas",
+          daasInternalExecution: "disabled",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Source: DAAS");
+    expect(markup).toContain("Success");
+    expect(markup).toContain("mis_daas_270");
+    expect(markup).toContain("Route status: Routed To Daas");
+    expect(markup).toContain("DAAS evidence");
+    expect(markup).toContain("https://daas.example/missions/mis_daas_270/evidence");
+  });
+
+  it("keeps blocked and inconclusive DAAS statuses distinct", () => {
+    const blockedMarkup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[]}
+        executionState={{
+          daasMission: {
+            executionAuthority: "daas",
+            status: "blocked_by_policy",
+          },
+          daasRouteStatus: "blocked_by_policy",
+        }}
+      />,
+    );
+    const inconclusiveMarkup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[]}
+        executionState={{
+          daasMission: {
+            executionAuthority: "daas",
+            missionId: "mis_daas_review",
+            status: "inconclusive",
+          },
+          daasRouteStatus: "routed_to_daas",
+        }}
+      />,
+    );
+
+    expect(blockedMarkup).toContain("Blocked By Policy");
+    expect(blockedMarkup).toContain("Route status: Blocked By Policy");
+    expect(inconclusiveMarkup).toContain("Inconclusive");
+    expect(inconclusiveMarkup).toContain("mis_daas_review");
+  });
+
+  it("does not render raw DAAS logs or unredacted adapter payload fields", () => {
+    const markup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[]}
+        executionState={{
+          daasMission: {
+            executionAuthority: "daas",
+            missionId: "mis_daas_redacted",
+            status: "running",
+            logs: "SENSITIVE_LOG_SENTINEL_DO_NOT_RENDER",
+            stdout: "raw server log",
+            finalPrompt: "ssh root@example",
+          },
+          rawLogs: "private-key-material",
+          stderr: "unredacted stderr",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Source: DAAS");
+    expect(markup).toContain("Running");
+    expect(markup).not.toContain("SENSITIVE_LOG_SENTINEL");
+    expect(markup).not.toContain("raw server log");
+    expect(markup).not.toContain("ssh root@example");
+    expect(markup).not.toContain("private-key-material");
+    expect(markup).not.toContain("unredacted stderr");
+  });
+
+  it("omits unsafe DAAS evidence URLs", () => {
+    const markup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[]}
+        executionState={{
+          daasMission: {
+            executionAuthority: "daas",
+            missionId: "mis_daas_link_guard",
+            status: "success",
+            evidenceUrl: "javascript:alert(1)",
+          },
+          daasRouteStatus: "routed_to_daas",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Source: DAAS");
+    expect(markup).toContain("mis_daas_link_guard");
+    expect(markup).not.toContain("DAAS evidence");
+    expect(markup).not.toContain("javascript:");
+  });
+
   it("renders a playable, downloadable video as the primary output", () => {
     const markup = renderToStaticMarkup(
       <IssueOutputSection
